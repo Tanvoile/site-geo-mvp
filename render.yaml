@@ -11,7 +11,5 @@ services:
   - type: web
     name: geo-frontend
     runtime: static
-    plan: free
-    # region ignorée pour les static sites
-    buildCommand: ""         # rien à builder (notre front est déjà des fichiers)
     staticPublishPath: frontend
+    # (pas de plan/region pour un site statique)
