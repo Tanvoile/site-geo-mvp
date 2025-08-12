@@ -1,16 +1,17 @@
 services:
   - type: web
     name: geo-backend
-    env: python
+    runtime: python
     plan: free
     region: frankfurt
     buildCommand: pip install -r backend/requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
 
-staticSites:
-  - name: geo-frontend
+  - type: web
+    name: geo-frontend
+    runtime: static
     plan: free
-    region: frankfurt
-    buildCommand: ""
-    publishPath: frontend
+    # region ignorée pour les static sites
+    buildCommand: ""         # rien à builder (notre front est déjà des fichiers)
+    staticPublishPath: frontend
