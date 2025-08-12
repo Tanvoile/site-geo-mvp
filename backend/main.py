@@ -8,7 +8,7 @@ import httpx
 from pyproj import Transformer
 from xml.etree import ElementTree as ET
 
-from config import CONFIG
+from .config import CONFIG
 
 load_dotenv()
 app = FastAPI(title="Site GEO — MVP sans base")
