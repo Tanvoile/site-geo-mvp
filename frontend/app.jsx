@@ -1,26 +1,29 @@
+// Pas d'import ESM ici. On utilise les globaux UMD: React et ReactDOM.
+console.log("app.jsx chargé");
+
 const { useState } = React;
 
 const API = (path, qs) => {
   const base = window.API_BASE || "http://localhost:8000";
-  return `${base}${path}?${new URLSearchParams(qs).toString()}`;
+  const q = qs ? "?" + new URLSearchParams(qs).toString() : "";
+  return `${base}${path}${q}`;
 };
 
-// Parse "lat, lon" (ou "lat lon", "lat;lon", etc.), tolère points/virgules décimales
+// Parse "lat, lon" (ou "lat lon", "lat;lon", etc.), tolère points/virgules
 function parseLatLon(str) {
   if (!str) return null;
   const nums = (str.match(/-?\d+(?:[.,]\d+)?/g) || []).slice(0, 2).map(v =>
     Number(v.replace(",", "."))
   );
-  if (nums.length !== 2 || !nums.every(n => Number.isFinite(n))) return null;
-  // Convention: on suppose "lat, lon" (comme dans ton exemple)
-  const [lat, lon] = nums;
+  if (nums.length !== 2 || !nums.every(Number.isFinite)) return null;
+  const [lat, lon] = nums; // on suppose "lat, lon"
   return { lat, lon };
 }
 
 function App() {
   const [lon, setLon] = useState(2.3522);
   const [lat, setLat] = useState(48.8566);
-  const [paste, setPaste] = useState(""); // zone de collage
+  const [paste, setPaste] = useState("");
   const [sheet, setSheet] = useState(null);
   const [plu, setPlu] = useState(null);
   const [heritage, setHeritage] = useState(null);
@@ -29,18 +32,11 @@ function App() {
 
   const applyPasted = (text) => {
     const parsed = parseLatLon(text ?? paste);
-    if (!parsed) {
-      setErr("Coordonnées collées invalides. Format attendu: lat, lon");
-      return;
-    }
-    setLat(parsed.lat);
-    setLon(parsed.lon);
-    setErr("");
+    if (!parsed) return setErr("Coordonnées collées invalides. Format: lat, lon");
+    setLat(parsed.lat); setLon(parsed.lon); setErr("");
   };
 
-  const swap = () => { // au cas où tu colles "lon, lat"
-    const a = lon; setLon(lat); setLat(a);
-  };
+  const swap = () => { const a = lon; setLon(lat); setLat(a); };
 
   const run = async () => {
     setErr("");
@@ -55,8 +51,9 @@ function App() {
 
     const fetchJSON = async (path, qs) => {
       const res = await fetch(API(path, qs));
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      return res.json();
+      const txt = await res.text();
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText} — ${txt}`);
+      try { return JSON.parse(txt); } catch { return txt; }
     };
 
     try { setSheet(await fetchJSON('/sheet/by-point', { lon: lonNum, lat: latNum })); }
@@ -73,8 +70,8 @@ function App() {
   };
 
   return (
-    <div style={{maxWidth: 800, margin: '40px auto', fontFamily: 'system-ui'}}>
-      <h1>Site GEO — MVP sans base</h1>
+    <div style={{maxWidth: 820, margin: '0 auto'}}>
+      <h1>Site GEO — MVP</h1>
       <p>Entrez un point GPS (WGS84) ou collez-le directement.</p>
 
       {/* Champ pour coller "lat, lon" */}
@@ -83,7 +80,7 @@ function App() {
           placeholder="Ex: 43.32047104103794, 3.2202660369625726"
           value={paste}
           onChange={e=>setPaste(e.target.value)}
-          onPaste={e => { // appliquer automatiquement au collage
+          onPaste={e => {
             const text = e.clipboardData?.getData("text");
             if (text) { e.preventDefault(); setPaste(text); applyPasted(text); }
           }}
@@ -93,7 +90,7 @@ function App() {
         <button onClick={swap} title="Inverser lat/lon">↔︎</button>
       </div>
 
-      {/* Édition fine si besoin */}
+      {/* Édition fine */}
       <div style={{display:'flex', gap:12, alignItems:'center', marginBottom:12}}>
         <label>Lon{" "}
           <input type="number" step="0.000001" value={lon} onChange={e=>setLon(e.target.value)} style={{width:180}}/>
@@ -111,9 +108,9 @@ function App() {
         {sheet ? (
           <div>
             {sheet.source && <p>Source: {sheet.source}</p>}
-            {sheet.download_url ? (
-              <a href={sheet.download_url} target="_blank" rel="noopener">Télécharger (WFS shapefile ZIP)</a>
-            ) : <p>Aucun lien de téléchargement.</p>}
+            {sheet.download_url
+              ? <a href={sheet.download_url} target="_blank" rel="noopener">Télécharger (WFS shapefile ZIP)</a>
+              : <p>Aucun lien de téléchargement.</p>}
           </div>
         ) : <p>Aucune requête effectuée.</p>}
       </section>
@@ -122,8 +119,12 @@ function App() {
         <h2>PLU</h2>
         {plu ? (
           <div>
-            {plu.download_url && <a href={plu.download_url} target="_blank" rel="noopener">Télécharger zonage (WFS shapefile ZIP)</a>}
-            {plu.atom_links?.length ? (
+            {plu.download_url && (
+              <a href={plu.download_url} target="_blank" rel="noopener">
+                Télécharger zonage (WFS shapefile ZIP)
+              </a>
+            )}
+            {Array.isArray(plu.atom_links) && plu.atom_links.length > 0 ? (
               <ul>{plu.atom_links.map((u,i)=>(<li key={i}><a href={u} target="_blank" rel="noopener">Pièce {i+1}</a></li>))}</ul>
             ) : <p>(ATOM à brancher par commune)</p>}
           </div>
@@ -134,9 +135,9 @@ function App() {
         <h2>Atlas des patrimoines</h2>
         {heritage ? (
           <div>
-            {heritage.download_url ? (
-              <a href={heritage.download_url} target="_blank" rel="noopener">Télécharger (WFS shapefile ZIP)</a>
-            ) : <p>Aucun lien de téléchargement.</p>}
+            {heritage.download_url
+              ? <a href={heritage.download_url} target="_blank" rel="noopener">Télécharger (WFS shapefile ZIP)</a>
+              : <p>Aucun lien de téléchargement.</p>}
           </div>
         ) : <p>Aucune requête effectuée.</p>}
       </section>
@@ -156,5 +157,5 @@ function App() {
   );
 }
 
-const { createRoot } = ReactDOM;
-createRoot(document.getElementById('root')).render(<App/>);
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
