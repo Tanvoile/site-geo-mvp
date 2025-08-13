@@ -1,4 +1,4 @@
-import { useState } from "https://esm.sh/react@18";
+const { useState } = React;
 
 const API = (path, qs) => {
   const base = window.API_BASE || "http://localhost:8000";
@@ -156,5 +156,5 @@ function App() {
   );
 }
 
-import { createRoot } from "https://esm.sh/react-dom@18/client";
+const { createRoot } = ReactDOM;
 createRoot(document.getElementById('root')).render(<App/>);
