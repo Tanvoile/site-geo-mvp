@@ -101,8 +101,9 @@ async def airport_check(lon: float = Query(...), lat: float = Query(...), buffer
             dmin = d; closest = (alon, alat)
     status = "KO" if (dmin is not None and dmin < buffer_m) else "OK"
     return {
-        "status": status,
-        "distance_m": round(dmin, 2) if dmin is not None else None,
-        "closest_airport_lonlat": closest,
-        "buffer_m": buffer_m,
-    }
+    "status": status,
+    "distance_m": round(dmin, 2) if dmin is not None else None,
+    "closest_airport_latlon": (closest[1], closest[0]) if closest else None,  # lat, lon
+    "buffer_m": buffer_m,
+}
+
