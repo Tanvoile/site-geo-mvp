@@ -172,23 +172,24 @@ async def sheet_by_point(
 @app.get("/plu/by-point")
 async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
     """
-    Retourne les infos de zonage du PLU à partir de l'API GPU (Géoportail de l'Urbanisme).
-    Utilise la ressource 'zone-urba' et un point WGS84 correctement encodé.
+    Zonage PLU via API GPU (zone-urba) pour un point WGS84.
+    L'API exige geom="POINT(x y)" (WKT entre guillemets).
     """
     if not CONFIG.gpu_base or not CONFIG.gpu_typename:
         raise HTTPException(status_code=500, detail="GPU API non configuré dans config.py")
 
     api_url = f"{CONFIG.gpu_base}/{CONFIG.gpu_typename}"
 
-    # Passer par params pour que httpx fasse l'encodage URL automatiquement
+    # IMPORTANT: guillemets autour du WKT pour satisfaire l'API GPU
     params = {
-        "geom": f"POINT({lon} {lat})",
-        "srid": 4326
+        "geom": f"\"POINT({lon} {lat})\"",
+        "srid": 4326,
     }
 
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.get(api_url, params=params)
         if r.status_code != 200:
+            # remonte l'erreur API pour debug
             raise HTTPException(status_code=500, detail=f"Erreur API GPU: {r.text}")
         data = r.json()
 
@@ -196,17 +197,17 @@ async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
     if not feats:
         return {
             "note": "Aucune zone PLU trouvée à ce point.",
-            "download_url": str(r.url),  # URL finale avec params encodés
+            "download_url": str(r.url),  # URL finale avec encodage
             "atom_links": []
         }
 
-    zone_props = feats[0].get("properties", {})
+    zone_props = feats[0].get("properties", {}) or {}
     return {
         "zone_code": zone_props.get("libelleZone") or zone_props.get("libelle"),
         "nature": zone_props.get("nature"),
         "type": zone_props.get("typeZone"),
         "download_url": str(r.url),
-        "atom_links": [],  # à compléter si besoin
+        "atom_links": [],
         "raw": zone_props
     }
 
