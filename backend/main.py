@@ -172,13 +172,37 @@ async def sheet_by_point(
 @app.get("/plu/by-point")
 async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
     """
-    Laisse la logique WFS en place si tu as une source WFS.
-    (Patch minimal: évite CONFIG.ign_version qui n'existe pas)
+    Retourne les infos de zonage du PLU à partir du Géoportail de l'Urbanisme (API Carto).
     """
-    if "RENSEIGNER" in (CONFIG.gpu_base + CONFIG.gpu_typename):
-        raise HTTPException(status_code=500, detail="GPU WFS non configuré (à renseigner dans config.py)")
-    url = wfs_shapezip_url(CONFIG.gpu_base, CONFIG.gpu_typename, lon, lat, WFS_VERSION)
-    return {"download_url": url, "atom_links": [], "note": "Brancher la liste ATOM selon la commune/INSEE."}
+    if not CONFIG.gpu_base or not CONFIG.gpu_typename:
+        raise HTTPException(status_code=500, detail="GPU API non configuré dans config.py")
+
+    # API REST GPU (GeoJSON)
+    api_url = f"{CONFIG.gpu_base}/{CONFIG.gpu_typename}?geom=POINT({lon} {lat})&srid=4326"
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(api_url)
+        if r.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Erreur API GPU: {r.text}")
+        data = r.json()
+
+    feats = data.get("features", [])
+    if not feats:
+        return {
+            "note": "Aucune zone PLU trouvée à ce point.",
+            "download_url": api_url,
+            "atom_links": []
+        }
+
+    zone_props = feats[0].get("properties", {})
+    return {
+        "zone_code": zone_props.get("libelleZone") or zone_props.get("libelle"),
+        "nature": zone_props.get("nature"),
+        "type": zone_props.get("typeZone"),
+        "download_url": api_url,
+        "atom_links": [],  # à brancher si on veut le règlement écrit via ATOM
+        "raw": zone_props
+    }
 
 # ---------- Atlas Patrimoines ----------
 @app.get("/heritage/by-point")
