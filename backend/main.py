@@ -1,7 +1,11 @@
+# backend/main.py
 import os
 import re
 import json
+import math
 import zipfile
+from typing import Any, Dict, List, Tuple
+
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -17,7 +21,7 @@ app = FastAPI(title="Site GEO — MVP sans base")
 # --- CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=getattr(CONFIG, "cors_allow_origins", ["*"]),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -26,13 +30,10 @@ app.add_middleware(
 # --- Projections ---
 _transform_wgs84_to_l93 = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
 
-# --- Constantes / défauts ---
+# --- Constantes / défauts (cadastre) ---
 WFS_VERSION = "2.0.0"
 WFS_BASE = getattr(CONFIG, "cadastre_wfs_base", "https://data.geopf.fr/wfs/ows")
-TYPENAME_FEUILLE = getattr(
-    CONFIG, "cadastre_typename", "CADASTRALPARCELS.PARCELLAIRE_EXPRESS:feuille"
-)
-# millésime demandé pour coller au lien cible (peut être "latest")
+TYPENAME_FEUILLE = getattr(CONFIG, "cadastre_typename", "CADASTRALPARCELS.PARCELLAIRE_EXPRESS:feuille")
 CADASTRE_MILLESIME = getattr(CONFIG, "cadastre_millesime", "2025-04-01")
 
 # Helper: lecture de props tolérante à la casse / alias
@@ -48,9 +49,16 @@ def _pick(props: dict, *keys, default=None):
             return props[uk]
     return default
 
-# --- Utilitaire WFS (shape-zip, filtré par point WGS84) ---
-# (utilisé par d'autres routes)
+# -------------------------
+#    Helpers HTTP / WFS
+# -------------------------
+def build_wfs_url(base: str, params: dict) -> str:
+    """Ajoute correctement les paramètres que base contienne ou non déjà un '?map='."""
+    qp = str(httpx.QueryParams(params))
+    return f"{base}&{qp}" if "?" in base else f"{base}?{qp}"
+
 def wfs_shapezip_url(base: str, typename: str, lon: float, lat: float, version: str = WFS_VERSION) -> str:
+    """Génère une URL WFS shape-zip avec INTERSECTS (pour GeoServer/IGN) – via build_wfs_url (gère '?map=')."""
     params = {
         "service": "WFS",
         "version": version,
@@ -58,11 +66,9 @@ def wfs_shapezip_url(base: str, typename: str, lon: float, lat: float, version: 
         "typeNames": typename,
         "outputFormat": "shape-zip",
         "srsName": "EPSG:4326",
-        # IMPORTANT: géométrie = geom + SRID explicite
         "CQL_FILTER": f"INTERSECTS(geom,SRID=4326;POINT({lon} {lat}))",
     }
-    query = str(httpx.QueryParams(params))
-    return f"{base}?{query}"
+    return build_wfs_url(base, params)
 
 # -------------------------
 #          Routes
@@ -112,7 +118,6 @@ def _feuille_feature_by_point(lon: float, lat: float) -> dict:
 
     if not feats:
         raise HTTPException(status_code=404, detail="Aucune feuille trouvée pour ce point.")
-    # on retourne les propriétés de la 1re feature
     return feats[0]["properties"]
 
 def _normalize_section(sec: str) -> str:
@@ -146,10 +151,7 @@ async def sheet_by_point(
     lat: float = Query(...),
     debug: bool = Query(False)
 ):
-    """
-    Renvoie un lien direct DXF-PCI (DGFiP) pour la feuille cadastrale
-    contenant/intersectant le point (lon, lat).
-    """
+    """Renvoie un lien direct DXF-PCI (DGFiP) pour la feuille cadastrale contenant/intersectant le point."""
     props = _feuille_feature_by_point(lon, lat)
     url = _dxf_feuille_url(props)
 
@@ -169,36 +171,7 @@ async def sheet_by_point(
         payload["wfs_props"] = props
     return payload
 
-# ---------- PLU ----------
-def _gpu_build_reglement_urls_from_props(props: dict) -> list[str]:
-    """
-    Construit les URL PDF du règlement écrit depuis les propriétés GPU si dispo :
-      - 'lien' (URL directe)
-      - Ou: /annexes/gpu/documents/{partition}/{gpu_doc_id}/{nomfic}.pdf
-    """
-    urls = []
-
-    # 1) URL directe éventuelle
-    for k in ("lien", "url", "urlReglement", "url_reglement"):
-        v = props.get(k)
-        if isinstance(v, str) and v.startswith("http"):
-            urls.append(v)
-
-    # 2) Construction manuelle
-    partition = props.get("partition") or props.get("Partition")
-    gpu_doc_id = props.get("gpu_doc_id") or props.get("gpuDocId") or props.get("gpu_docid")
-    nomfic = props.get("nomfic") or props.get("nomFic") or props.get("nom_fic")
-    if partition and gpu_doc_id and nomfic:
-        suffix = nomfic if nomfic.lower().endswith(".pdf") else f"{nomfic}.pdf"
-        urls.append(f"https://data.geopf.fr/annexes/gpu/documents/{partition}/{gpu_doc_id}/{suffix}")
-
-    # Uniq en gardant l'ordre
-    seen = set(); out = []
-    for u in urls:
-        if u not in seen:
-            out.append(u); seen.add(u)
-    return out
-
+# ---------- PLU (zonage) ----------
 @app.get("/plu/by-point")
 async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
     """
@@ -229,7 +202,24 @@ async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
     props = feats[0].get("properties", {}) or {}
     zone_code = props.get("libelle") or props.get("libelleZone")
 
-    # Construction des liens de règlement écrit
+    def _gpu_build_reglement_urls_from_props(props: dict) -> List[str]:
+        urls = []
+        for k in ("lien", "url", "urlReglement", "url_reglement"):
+            v = props.get(k)
+            if isinstance(v, str) and v.startswith("http"):
+                urls.append(v)
+        partition = props.get("partition") or props.get("Partition")
+        gpu_doc_id = props.get("gpu_doc_id") or props.get("gpuDocId") or props.get("gpu_docid")
+        nomfic = props.get("nomfic") or props.get("nomFic") or props.get("nom_fic")
+        if partition and gpu_doc_id and nomfic:
+            suffix = nomfic if nomfic.lower().endswith(".pdf") else f"{nomfic}.pdf"
+            urls.append(f"https://data.geopf.fr/annexes/gpu/documents/{partition}/{gpu_doc_id}/{suffix}")
+        seen = set(); out = []
+        for u in urls:
+            if u not in seen:
+                out.append(u); seen.add(u)
+        return out
+
     reglement_urls = _gpu_build_reglement_urls_from_props(props)
 
     return {
@@ -238,7 +228,7 @@ async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
         "nature": props.get("nature"),
         "type": props.get("typeZone") or props.get("typezone"),
         "download_url": str(r.url),
-        "atom_links": [],  # à remplir si besoin
+        "atom_links": [],
         "reglement_pdfs": reglement_urls,
         "raw": props
     }
@@ -259,18 +249,15 @@ def _looks_like_graphic_plan(title: str, filename: str | None = None) -> bool:
     return any(k in hay for k in keys)
 
 async def _apicarto_zone_urba_by_point(lon: float, lat: float) -> dict | None:
-    """Retourne la première feature zone-urba intersectant le point (GeoJSON)."""
     url = f"{APICARTO_GPU_BASE}/zone-urba"
     geom = {"type": "Point", "coordinates": [lon, lat]}
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(url, params={"geom": json.dumps(geom)})
         r.raise_for_status()
         data = r.json()
-    feats = data.get("features", [])
-    return feats[0] if feats else None
+    feats = data.get("features", []); return feats[0] if feats else None
 
 async def _gpu_list_document_files(doc_id: str) -> list[dict]:
-    """Liste des pièces d’un document GPU (titres, types, URLs directes)."""
     url = f"{GPU_API_BASE}/document/{doc_id}/files"
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(url)
@@ -280,19 +267,12 @@ async def _gpu_list_document_files(doc_id: str) -> list[dict]:
         return r.json() if isinstance(r.json(), list) else []
 
 def _extract_doc_id_and_zone(props: dict) -> tuple[str | None, str | None, str | None]:
-    """
-    Essaie de récupérer: (gpu_doc_id, partition, code_zone).
-    Les noms de champs peuvent varier selon les producteurs → tolérance.
-    """
-    # id du document sur le GPU
     gpu_doc_id = (
         props.get("gpu_doc_id") or props.get("gpuDocId") or
         props.get("iddocument") or props.get("idDocument") or
         props.get("doc_id") or props.get("document")
     )
-    # partition (ex: DU_33063 pour Bordeaux)
     partition = props.get("partition") or props.get("Partition")
-    # code de zone utile pour matcher une planche
     zone_code = props.get("libelle") or props.get("libelleZone") or props.get("LIBELLE")
     return str(gpu_doc_id) if gpu_doc_id else None, str(partition) if partition else None, str(zone_code) if zone_code else None
 
@@ -302,13 +282,6 @@ async def plu_graphic_by_point(
     lat: float = Query(...),
     strict_zone_match: bool = Query(True, description="Filtrer les planches contenant le code de zone dans le titre/fichier")
 ):
-    """
-    Renvoie les liens directs vers le règlement graphique (plans de zonage) pour le document couvrant le point.
-    - Détermine le document via API Carto /zone-urba
-    - Liste des pièces via GPU /api/document/{id}/files
-    - Filtre les 'règlement graphique / plan(s) de zonage)'; essaie de cibler la planche selon le code de zone.
-    """
-    # 1) zonage au point
     feat = await _apicarto_zone_urba_by_point(lon, lat)
     if not feat:
         return {"note": "Aucune zone PLU trouvée à ce point.", "items": []}
@@ -317,7 +290,6 @@ async def plu_graphic_by_point(
     if not gpu_doc_id:
         raise HTTPException(status_code=500, detail="Impossible d'identifier l'id du document GPU depuis zone-urba.")
 
-    # 2) pièces du document
     files = await _gpu_list_document_files(gpu_doc_id)
     if not files:
         return {
@@ -326,24 +298,17 @@ async def plu_graphic_by_point(
             "items": []
         }
 
-    # 3) filtrage 'règlement graphique' / 'plan(s) de zonage)'
     items = []
     for f in files:
-        # champs tolérants (selon versions)
         title = f.get("title") or f.get("nom") or f.get("name") or ""
         url = f.get("url") or f.get("href") or f.get("downloadUrl") or ""
         ftype = (f.get("type") or f.get("category") or "").lower()
         filename = (f.get("fileName") or f.get("filename") or "")
-        # a) si typé côté GPU
         is_graphic_typed = any(k in ftype for k in ["reglement_graphique", "reglement-graphique", "document_graphique", "graphique"])
-        # b) sinon heuristique titre/nom
         is_graphic_guessed = _looks_like_graphic_plan(title, filename)
         if (is_graphic_typed or is_graphic_guessed) and url.startswith("http"):
-            items.append({
-                "title": title, "type": ftype, "url": url, "filename": filename
-            })
+            items.append({"title": title, "type": ftype, "url": url, "filename": filename})
 
-    # 4) sélection automatique par 'code de zone' dans le titre/nom (si demandé)
     selected = items
     if zone_code and strict_zone_match:
         z = str(zone_code).lower().replace(" ", "")
@@ -354,7 +319,6 @@ async def plu_graphic_by_point(
         if narrowed:
             selected = narrowed
 
-    # 5) essayer de remonter aussi un "plan de repérage des planches" s'il existe
     locating = []
     for f in files:
         title = (f.get("title") or f.get("nom") or "").lower()
@@ -369,46 +333,51 @@ async def plu_graphic_by_point(
         "zone_code": zone_code,
         "count_all_graphic": len(items),
         "count_selected": len(selected),
-        "selected_planches": selected,         # notre meilleure estimation (peut être 1..n)
-        "all_graphic_plans": items,            # toutes les planches graphiques
-        "locating_maps": locating              # plan de repérage / assemblage si dispo
+        "selected_planches": selected,
+        "all_graphic_plans": items,
+        "locating_maps": locating
     }
 
-# ---------- Atlas Patrimoines ----------
+# ---------- Atlas Patrimoines (single-link, compat) ----------
 @app.get("/heritage/by-point")
 async def heritage_by_point(lon: float = Query(...), lat: float = Query(...)):
     """
-    Patch minimal: évite CONFIG.ign_version qui n'existe pas.
-    Attention: si atlas_base contient déjà '?map=...', gérer '&' au lieu de '?' si besoin.
+    Renvoie un lien WFS shape-zip (utile si tu veux télécharger la géo).
+    NB: utilise build_wfs_url pour gérer les bases avec '?map=...'.
     """
-    if "RENSEIGNER" in (CONFIG.atlas_base + CONFIG.atlas_typename):
-        raise HTTPException(status_code=500, detail="Atlas WFS non configuré (à renseigner dans config.py)")
+    if not getattr(CONFIG, "atlas_base", None) or not getattr(CONFIG, "atlas_typename", None):
+        raise HTTPException(status_code=500, detail="Atlas WFS non configuré (atlas_base/atlas_typename).")
     url = wfs_shapezip_url(CONFIG.atlas_base, CONFIG.atlas_typename, lon, lat, WFS_VERSION)
     return {"download_url": url}
 
-    # main.py (extrait)
-import json
-from typing import Any, Dict, List, Tuple
-
-# … (imports existants + app, CORS, etc.)
+# ---------- Atlas Patrimoines (résumé multi-couches) ----------
+def _bbox_deg_around_point(lon: float, lat: float, radius_m: float = 5.0) -> Tuple[float, float, float, float]:
+    """BBox minuscule autour du point (~5 m) en degrés; OK pour MapServer WFS par BBOX."""
+    dlat = radius_m / 110_574.0
+    dlon = radius_m / (111_320.0 * math.cos(math.radians(lat)) or 1e-6)
+    return (lon - dlon, lat - dlat, lon + dlon, lat + dlat)
 
 async def _atlas_hits_for_point(base: str, typename: str, lon: float, lat: float, geom_field: str = "geom") -> dict:
     """
-    Interroge le WFS MapServer de l’Atlas au point donné.
-    On demande du GeoJSON (si dispo) ; sinon GML et on renvoie features = [].
+    MapServer-compatible: on requête par BBOX minuscule (≈ 5 m).
+    Tentative 1: WFS 1.0.0 + GeoJSON (TYPENAME/SRS/BBOX)
+    Secours    : WFS 2.0.0 + application/json (TYPENAMES/SRSNAME/BBOX)
     """
-    # Essai GeoJSON (MapServer WFS 1.0.0/2.0.0 accepte souvent application/json)
+    minx, miny, maxx, maxy = _bbox_deg_around_point(lon, lat, radius_m=7.5)
+
+    # Essai 1 : WFS 1.0.0 (souvent mieux supporté par MapServer)
     params = {
         "SERVICE": "WFS",
-        "VERSION": "2.0.0",
+        "VERSION": "1.0.0",
         "REQUEST": "GetFeature",
-        "TYPENAMES": typename,
-        "SRSNAME": "EPSG:4326",
-        "OUTPUTFORMAT": "application/json",
-        "CQL_FILTER": f"INTERSECTS({geom_field},SRID=4326;POINT({lon} {lat}))",
+        "TYPENAME": typename,
+        "SRS": "EPSG:4326",
+        "OUTPUTFORMAT": "geojson",
+        "BBOX": f"{minx},{miny},{maxx},{maxy}",
     }
-    url = f"{base}&{str(httpx.QueryParams(params))}"
+    url = build_wfs_url(base, params)
 
+    features = []
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             r = await client.get(url)
@@ -416,17 +385,31 @@ async def _atlas_hits_for_point(base: str, typename: str, lon: float, lat: float
         data = r.json()
         features = data.get("features", [])
     except Exception:
-        # Secours: si GeoJSON indisponible, renvoyer vide mais non bloquant
-        features = []
+        # Essai 2 : WFS 2.0.0
+        params2 = {
+            "SERVICE": "WFS",
+            "VERSION": "2.0.0",
+            "REQUEST": "GetFeature",
+            "TYPENAMES": typename,
+            "SRSNAME": "EPSG:4326",
+            "OUTPUTFORMAT": "application/json",
+            "BBOX": f"{minx},{miny},{maxx},{maxy}",
+        }
+        url2 = build_wfs_url(base, params2)
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                r2 = await client.get(url2)
+            r2.raise_for_status()
+            data2 = r2.json()
+            features = data2.get("features", [])
+        except Exception:
+            features = []
 
     def best_label(props: Dict[str, Any]) -> str:
-        # Cherche un champ "nom" / "libelle" / "appel" / "titre" / "appellation" pour afficher lisible
-        candidates = ["nom", "Nom", "NOM", "libelle", "LIBELLE", "intitule", "INTITULE",
-                      "appellation", "APPELLATION", "titre", "TITRE", "denomination", "DENOMINATION"]
-        for c in candidates:
-            if c in props and props[c]:
-                return str(props[c])
-        # fallback : premier champ non vide
+        for k in ("nom","Nom","NOM","libelle","LIBELLE","intitule","INTITULE",
+                  "appellation","APPELLATION","titre","TITRE","denomination","DENOMINATION"):
+            if k in props and props[k]:
+                return str(props[k])
         for k, v in props.items():
             if isinstance(v, (str, int, float)) and str(v).strip():
                 return f"{k}: {v}"
@@ -434,12 +417,9 @@ async def _atlas_hits_for_point(base: str, typename: str, lon: float, lat: float
 
     out = []
     for f in features:
-        props = f.get("properties", {}) or {}
-        out.append({
-            "id": f.get("id"),
-            "label": best_label(props),
-            "properties": props  # tu pourras piocher un détail si besoin
-        })
+        props = (f.get("properties") or {})
+        out.append({"id": f.get("id"), "label": best_label(props), "properties": props})
+
     return {"count": len(out), "features": out}
 
 @app.get("/heritage/summary/by-point")
@@ -448,40 +428,35 @@ async def heritage_summary_by_point(lon: float = Query(...), lat: float = Query(
     Récap pour le front : pour chaque couche Atlas, indique si le point est dedans
     et liste *quelques* libellés/éléments trouvés.
     """
-    layers = getattr(CONFIG, "atlas_layers", {})
-    if not layers:
-        raise HTTPException(status_code=500, detail="Aucune couche Atlas configurée.")
+    layers_cfg = getattr(CONFIG, "atlas_layers", None)
+    if not layers_cfg:
+        # Fallback: on utilise atlas_base/atlas_typename comme unique couche
+        if not getattr(CONFIG, "atlas_base", None) or not getattr(CONFIG, "atlas_typename", None):
+            raise HTTPException(status_code=500, detail="Aucune couche Atlas configurée (atlas_layers ni atlas_base/atlas_typename).")
+        layers_cfg = {
+            "atlas_unique": {
+                "base": CONFIG.atlas_base,
+                "typename": CONFIG.atlas_typename,
+                "pretty": "Atlas (couche unique configurée)",
+                "geom_field": getattr(CONFIG, "atlas_geom_field", "geom"),
+            }
+        }
 
     results = {}
     total_hits = 0
-
-    for key, meta in layers.items():
+    for key, meta in layers_cfg.items():
         base = meta["base"]
         tname = meta["typename"]
         pretty = meta.get("pretty", key)
+        gfield = meta.get("geom_field", getattr(CONFIG, "atlas_geom_field", "geom"))
         try:
-            res = await _atlas_hits_for_point(base, tname, lon, lat, getattr(CONFIG, "atlas_geom_field", "geom"))
-            results[key] = {
-                "pretty": pretty,
-                "count": res["count"],
-                "hits": res["features"][:10],  # ne renvoie que 10 items max pour le front (lisibilité)
-            }
+            res = await _atlas_hits_for_point(base, tname, lon, lat, gfield)
+            results[key] = {"pretty": pretty, "count": res["count"], "hits": res["features"][:10]}
             total_hits += res["count"]
         except Exception as e:
-            results[key] = {
-                "pretty": pretty,
-                "count": 0,
-                "hits": [],
-                "error": str(e),
-            }
+            results[key] = {"pretty": pretty, "count": 0, "hits": [], "error": str(e)}
 
-    summary = {
-        "any_protection": total_hits > 0,
-        "total_hits": total_hits,
-        "layers": results,
-    }
-    return summary
-
+    return {"any_protection": total_hits > 0, "total_hits": total_hits, "layers": results}
 
 # -------------------------
 #    KMZ/KML: parsing
@@ -522,23 +497,19 @@ def _float2(s: str):
 
 def parse_kml_points(path: str):
     """
-    Récupère tous les points d'un KML/KMZ, en gérant :
-      - <Point><coordinates>lon,lat[,alt]</coordinates>
-      - coordonnées multiples (séparées par espaces / retours à la ligne), alt ignorée
-      - géométries diverses (<LineString>/<Polygon> -> on prend tous les sommets via <coordinates>)
-      - <gx:coord> "lon lat alt"
-    Retourne une liste [(lon, lat), ...] sans doublons exacts.
+    Récupère tous les points d'un KML/KMZ.
+    - <Point><coordinates>lon,lat[,alt]</coordinates>
+    - <LineString>/<Polygon> : prend tous les sommets via <coordinates>
+    - <gx:coord> "lon lat alt"
     """
     root = _load_kml_root(path)
     pts = set()
 
-    # 1) Tout ce qui finit par 'coordinates' (quel que soit le namespace)
     for el in root.iter():
         if el.tag.endswith("coordinates"):
             text = (el.text or "").strip()
             if not text:
                 continue
-            # tokens "lon,lat[,alt]" séparés par espaces/retours
             for tok in re.split(r"\s+", text):
                 if not tok:
                     continue
@@ -548,7 +519,6 @@ def parse_kml_points(path: str):
                     if lon is not None and lat is not None:
                         pts.add((lon, lat))
 
-    # 2) <gx:coord> : "lon lat alt"
     for el in root.iter():
         if el.tag.endswith("coord"):
             text = (el.text or "").strip()
@@ -586,7 +556,7 @@ async def airport_check(
         raise HTTPException(status_code=500, detail=str(e))
 
     if not pts:
-        raise HTTPException(status_code=500, detail="Aucun point détecté (tags <coordinates> ou <gx:coord}).")
+        raise HTTPException(status_code=500, detail="Aucun point détecté (tags <coordinates> ou <gx:coord>).")
 
     dmin = None
     closest = None
@@ -597,7 +567,6 @@ async def airport_check(
             closest = (alon, alat)
 
     status = "KO" if (dmin is not None and dmin < buffer_m) else "OK"
-    # >>> Renvoi en LAT / LON comme demandé <<<
     return {
         "status": status,
         "distance_m": round(dmin, 2) if dmin is not None else None,
