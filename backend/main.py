@@ -37,7 +37,8 @@ def wfs_shapezip_url(base: str, typename: str, lon: float, lat: float, version: 
         "outputFormat": "shape-zip",
         "CQL_FILTER": f"INTERSECTS(geom,SRID=4326;POINT({lon} {lat}))",
     }
-    query = "&".join(f"{k}={httpx.QueryParams({k: v})[k]}" for k, v in params.items())
+    # Encodage robuste en une fois
+    query = str(httpx.QueryParams(params))
     return f"{base}?{query}"
 
 # -------------------------
