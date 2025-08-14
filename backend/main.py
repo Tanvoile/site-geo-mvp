@@ -169,19 +169,70 @@ async def sheet_by_point(
         payload["wfs_props"] = props
     return payload
 
-# ---------- PLU ----------
+# ---------- PLU : zonage + liens règlement écrit ----------
+def _gpu_build_reglement_urls_from_props(props: dict) -> list[str]:
+    """
+    Construit les URL PDF du règlement écrit depuis les propriétés GPU si dispo :
+      - 'lien' (URL directe)
+      - Ou: /annexes/gpu/documents/{partition}/{gpu_doc_id}/{nomfic}.pdf
+    """
+    urls = []
+
+    # 1) URL directe éventuelle
+    for k in ("lien", "url", "urlReglement", "url_reglement"):
+        v = props.get(k)
+        if isinstance(v, str) and v.startswith("http"):
+            urls.append(v)
+
+    # 2) Construction manuelle
+    partition = props.get("partition") or props.get("Partition")
+    gpu_doc_id = props.get("gpu_doc_id") or props.get("gpuDocId") or props.get("gpu_docid")
+    nomfic = props.get("nomfic") or props.get("nomFic") or props.get("nom_fic")
+    if partition and gpu_doc_id and nomfic:
+        suffix = nomfic if nomfic.lower().endswith(".pdf") else f"{nomfic}.pdf"
+        urls.append(f"https://data.geopf.fr/annexes/gpu/documents/{partition}/{gpu_doc_id}/{suffix}")
+
+    # Uniq en gardant l'ordre
+    seen = set(); out = []
+    for u in urls:
+        if u not in seen:
+            out.append(u); seen.add(u)
+    return out
+
+def _gpu_fetch_reglement_from_atom(atom_url: str) -> list[str]:
+    """Fallback : parcourt le flux ATOM et récupère les PDF dont le titre contient 'règlement/reglement'."""
+    pdfs = []
+    try:
+        r = httpx.get(atom_url, timeout=12)
+        r.raise_for_status()
+        root = ET.fromstring(r.content)
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        for entry in root.findall("atom:entry", ns):
+            title = (entry.findtext("atom:title", namespaces=ns) or "").lower()
+            link_el = entry.find("atom:link", ns)
+            href = (link_el.get("href") if link_el is not None else "") or ""
+            title_norm = title.replace("é", "e").replace("è", "e").replace("ê", "e")
+            if "reglement" in title_norm and href.lower().endswith(".pdf"):
+                pdfs.append(href)
+    except Exception:
+        pass
+    # Uniq
+    seen = set(); out = []
+    for u in pdfs:
+        if u not in seen:
+            out.append(u); seen.add(u)
+    return out
+
 @app.get("/plu/by-point")
 async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
     """
-    Zonage PLU via API Carto (module Urbanisme/GPU).
+    Zonage PLU via API Carto (GPU) + liens du règlement écrit si disponibles.
     L'API attend geom=GeoJSON (WGS84), pas du WKT.
     """
     if not CONFIG.gpu_base or not CONFIG.gpu_typename:
         raise HTTPException(status_code=500, detail="GPU API non configuré dans config.py")
 
     api_url = f"{CONFIG.gpu_base}/{CONFIG.gpu_typename}"
-
-    # IMPORTANT: GeoJSON encodé en JSON, pas WKT
     geom_geojson = {"type": "Point", "coordinates": [lon, lat]}
     params = {"geom": json.dumps(geom_geojson)}  # httpx fera l'URL-encoding
 
@@ -195,20 +246,29 @@ async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
     if not feats:
         return {
             "note": "Aucune zone PLU trouvée à ce point.",
-            "download_url": str(r.url),  # URL finale appelée (encodée)
+            "download_url": str(r.url),
+            "reglement_pdfs": [],
             "atom_links": []
         }
 
     props = feats[0].get("properties", {}) or {}
-    # D'après la doc, 'libelle' (court) et 'libelong' (long) existent sur zone-urba. :contentReference[oaicite:1]{index=1}
-    zone_code = props.get("libelle") or props.get("libelleZone")
+
+    # ——— liens règlement écrit ———
+    reglement_urls = _gpu_build_reglement_urls_from_props(props)
+    atom_url = props.get("urlAtom") or props.get("url_atom") or props.get("atom") or props.get("urlFlux")
+    atom_links = [atom_url] if isinstance(atom_url, str) and atom_url.startswith("http") else []
+    if not reglement_urls and atom_links:
+        reglement_urls = _gpu_fetch_reglement_from_atom(atom_links[0])
+
+    # ——— payload (on garde ce que ton front attend déjà) ———
     return {
-        "zone_code": zone_code,
+        "zone_code": props.get("libelle") or props.get("libelleZone"),
         "libelle_long": props.get("libelong"),
         "nature": props.get("nature"),
         "type": props.get("typeZone") or props.get("typezone"),
-        "download_url": str(r.url),
-        "atom_links": [],
+        "download_url": str(r.url),       # lien vers la requête zone-urba
+        "reglement_pdfs": reglement_urls, # <<< nouveaux liens PDF du règlement écrit
+        "atom_links": atom_links,         # flux ATOM (utile pour debug / fallback)
         "raw": props
     }
 
