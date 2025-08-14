@@ -169,7 +169,7 @@ async def sheet_by_point(
         payload["wfs_props"] = props
     return payload
 
-# ---------- PLU : zonage + liens règlement écrit ----------
+# ---------- PLU ----------
 def _gpu_build_reglement_urls_from_props(props: dict) -> list[str]:
     """
     Construit les URL PDF du règlement écrit depuis les propriétés GPU si dispo :
@@ -199,42 +199,17 @@ def _gpu_build_reglement_urls_from_props(props: dict) -> list[str]:
             out.append(u); seen.add(u)
     return out
 
-def _gpu_fetch_reglement_from_atom(atom_url: str) -> list[str]:
-    """Fallback : parcourt le flux ATOM et récupère les PDF dont le titre contient 'règlement/reglement'."""
-    pdfs = []
-    try:
-        r = httpx.get(atom_url, timeout=12)
-        r.raise_for_status()
-        root = ET.fromstring(r.content)
-        ns = {"atom": "http://www.w3.org/2005/Atom"}
-        for entry in root.findall("atom:entry", ns):
-            title = (entry.findtext("atom:title", namespaces=ns) or "").lower()
-            link_el = entry.find("atom:link", ns)
-            href = (link_el.get("href") if link_el is not None else "") or ""
-            title_norm = title.replace("é", "e").replace("è", "e").replace("ê", "e")
-            if "reglement" in title_norm and href.lower().endswith(".pdf"):
-                pdfs.append(href)
-    except Exception:
-        pass
-    # Uniq
-    seen = set(); out = []
-    for u in pdfs:
-        if u not in seen:
-            out.append(u); seen.add(u)
-    return out
-
 @app.get("/plu/by-point")
 async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
     """
     Zonage PLU via API Carto (GPU) + liens du règlement écrit si disponibles.
-    L'API attend geom=GeoJSON (WGS84), pas du WKT.
     """
     if not CONFIG.gpu_base or not CONFIG.gpu_typename:
         raise HTTPException(status_code=500, detail="GPU API non configuré dans config.py")
 
     api_url = f"{CONFIG.gpu_base}/{CONFIG.gpu_typename}"
     geom_geojson = {"type": "Point", "coordinates": [lon, lat]}
-    params = {"geom": json.dumps(geom_geojson)}  # httpx fera l'URL-encoding
+    params = {"geom": json.dumps(geom_geojson)}
 
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.get(api_url, params=params)
@@ -247,28 +222,24 @@ async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
         return {
             "note": "Aucune zone PLU trouvée à ce point.",
             "download_url": str(r.url),
-            "reglement_pdfs": [],
-            "atom_links": []
+            "atom_links": [],
+            "reglement_pdfs": []
         }
 
     props = feats[0].get("properties", {}) or {}
+    zone_code = props.get("libelle") or props.get("libelleZone")
 
-    # ——— liens règlement écrit ———
+    # Construction des liens de règlement écrit
     reglement_urls = _gpu_build_reglement_urls_from_props(props)
-    atom_url = props.get("urlAtom") or props.get("url_atom") or props.get("atom") or props.get("urlFlux")
-    atom_links = [atom_url] if isinstance(atom_url, str) and atom_url.startswith("http") else []
-    if not reglement_urls and atom_links:
-        reglement_urls = _gpu_fetch_reglement_from_atom(atom_links[0])
 
-    # ——— payload (on garde ce que ton front attend déjà) ———
     return {
-        "zone_code": props.get("libelle") or props.get("libelleZone"),
+        "zone_code": zone_code,
         "libelle_long": props.get("libelong"),
         "nature": props.get("nature"),
         "type": props.get("typeZone") or props.get("typezone"),
-        "download_url": str(r.url),       # lien vers la requête zone-urba
-        "reglement_pdfs": reglement_urls, # <<< nouveaux liens PDF du règlement écrit
-        "atom_links": atom_links,         # flux ATOM (utile pour debug / fallback)
+        "download_url": str(r.url),
+        "atom_links": [],  # à remplir si besoin
+        "reglement_pdfs": reglement_urls,
         "raw": props
     }
 
