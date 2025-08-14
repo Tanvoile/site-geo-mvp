@@ -28,6 +28,7 @@ function App() {
   const [plu, setPlu] = useState(null);
   const [heritage, setHeritage] = useState(null);
   const [airport, setAirport] = useState(null);
+  const [urbanisme, setUrbanisme] = useState(null); // ← NEW
   const [err, setErr] = useState("");
 
   const applyPasted = (text) => {
@@ -40,7 +41,7 @@ function App() {
 
   const run = async () => {
     setErr("");
-    setSheet(null); setPlu(null); setHeritage(null); setAirport(null);
+    setSheet(null); setPlu(null); setHeritage(null); setAirport(null); setUrbanisme(null);
 
     const lonNum = Number(String(lon).replace(",", "."));
     const latNum = Number(String(lat).replace(",", "."));
@@ -61,6 +62,10 @@ function App() {
 
     try { setPlu(await fetchJSON('/plu/by-point', { lon: lonNum, lat: latNum })); }
     catch (e) { setErr(prev => (prev ? prev + " | " : "") + "PLU: " + e.message); }
+
+    // NEW: statut d’urbanisme (RNU / CC / PLU dispo / etc.)
+    try { setUrbanisme(await fetchJSON('/urbanisme/status/by-point', { lon: lonNum, lat: latNum })); }
+    catch (e) { setErr(prev => (prev ? prev + " | " : "") + "Statut urbanisme: " + e.message); }
 
     try { setHeritage(await fetchJSON('/heritage/by-point', { lon: lonNum, lat: latNum })); }
     catch (e) { setErr(prev => (prev ? prev + " | " : "") + "Atlas: " + e.message); }
@@ -127,20 +132,35 @@ function App() {
                 Voir la réponse API GPU (GeoJSON)
               </a>
             )}
+
             {Array.isArray(plu.reglement_pdfs) && plu.reglement_pdfs.length > 0 && (
-  <div>
-    <p>Règlement écrit :</p>
-    <ul>{plu.reglement_pdfs.map((u,i)=>(
-      <li key={i}><a href={u} target="_blank" rel="noopener">PDF {i+1}</a></li>
-    ))}</ul>
-  </div>
-)}
+              <div>
+                <p>Règlement écrit :</p>
+                <ul>{plu.reglement_pdfs.map((u,i)=>(
+                  <li key={i}><a href={u} target="_blank" rel="noopener">PDF {i+1}</a></li>
+                ))}</ul>
+              </div>
+            )}
 
             {Array.isArray(plu.atom_links) && plu.atom_links.length > 0 ? (
               <ul>{plu.atom_links.map((u,i)=>(
                 <li key={i}><a href={u} target="_blank" rel="noopener">Pièce {i+1}</a></li>
               ))}</ul>
             ) : <p>(ATOM à brancher par commune)</p>}
+          </div>
+        ) : <p>Aucune requête effectuée.</p>}
+      </section>
+
+      {/* NEW: Statut d’urbanisme (commune) */}
+      <section>
+        <h2>Statut d’urbanisme (commune)</h2>
+        {urbanisme ? (
+          <div style={{border:'1px solid #ddd', padding:8}}>
+            <p><b>{urbanisme.status}</b></p>
+            {urbanisme.commune && <p>Commune : {urbanisme.commune}{urbanisme.insee ? ` (${urbanisme.insee})` : ""}</p>}
+            {urbanisme.du_type && <p>Type de document : {urbanisme.du_type}</p>}
+            {urbanisme.partition && <p>Partition : {urbanisme.partition}</p>}
+            {urbanisme.doc_id && <p>Document ID : {urbanisme.doc_id}</p>}
           </div>
         ) : <p>Aucune requête effectuée.</p>}
       </section>
