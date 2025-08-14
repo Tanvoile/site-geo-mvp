@@ -23,21 +23,28 @@ app.add_middleware(
 )
 
 # --- Projections ---
-_transform_wgs84_to_l93 = Transformer.from_crs(
-    "EPSG:4326", "EPSG:2154", always_xy=True
+_transform_wgs84_to_l93 = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
+
+# --- Constantes / défauts ---
+WFS_VERSION = "2.0.0"
+WFS_BASE = getattr(CONFIG, "cadastre_wfs_base", "https://data.geopf.fr/wfs/ows")
+TYPENAME_FEUILLE = getattr(
+    CONFIG, "cadastre_typename", "CADASTRALPARCELS.PARCELLAIRE_EXPRESS:feuille"
 )
+CADASTRE_MILLESIME = getattr(CONFIG, "cadastre_millesime", "latest")  # ex: "2025-04-01" ou "latest"
 
 # --- Utilitaire WFS (shape-zip, filtré par point WGS84) ---
-def wfs_shapezip_url(base: str, typename: str, lon: float, lat: float, version: str = "2.0.0") -> str:
+# (utilisé par d'autres routes; corrigé: srsName + the_geom)
+def wfs_shapezip_url(base: str, typename: str, lon: float, lat: float, version: str = WFS_VERSION) -> str:
     params = {
         "service": "WFS",
         "version": version,
         "request": "GetFeature",
         "typeNames": typename,
         "outputFormat": "shape-zip",
-        "CQL_FILTER": f"INTERSECTS(geom,SRID=4326;POINT({lon} {lat}))",
+        "srsName": "EPSG:4326",
+        "CQL_FILTER": f"INTERSECTS(the_geom,POINT({lon} {lat}))",
     }
-    # Encodage robuste en une fois
     query = str(httpx.QueryParams(params))
     return f"{base}?{query}"
 
@@ -49,32 +56,83 @@ def wfs_shapezip_url(base: str, typename: str, lon: float, lat: float, version: 
 def health():
     return {"status": "ok"}
 
+# ---------- DXF-PCI FEUILLE (DGFiP) ----------
+def _feuille_feature_by_point(lon: float, lat: float) -> dict:
+    """
+    Interroge la couche IGN 'feuille' et renvoie les propriétés de la feuille
+    qui intersecte le point (lon, lat) en WGS84.
+    """
+    params = {
+        "service": "WFS",
+        "version": WFS_VERSION,
+        "request": "GetFeature",
+        "typeNames": TYPENAME_FEUILLE,
+        "srsName": "EPSG:4326",
+        "outputFormat": "application/json",
+        "CQL_FILTER": f"INTERSECTS(the_geom,POINT({lon} {lat}))",
+    }
+    r = httpx.get(WFS_BASE, params=params, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    feats = data.get("features", [])
+    if not feats:
+        raise HTTPException(status_code=404, detail="Aucune feuille trouvée pour ce point.")
+    return feats[0]["properties"]  # on prend la 1re si plusieurs
+
+def _dxf_feuille_url(props: dict) -> str:
+    """
+    Construit l'URL 'cadastre.data.gouv.fr' du DXF-PCI (tar.bz2) de la feuille entière.
+    Schéma: /{millesime}/dxf/feuilles/{DEP}/{INSEE}/dxf-{DEP}{COM}{COM_ABS}{SECTION}{FEUILLE}.tar.bz2
+    """
+    code_dep = str(props["CODE_DEP"]).zfill(2)
+    code_com = str(props["CODE_COM"]).zfill(3)
+    com_abs = str(props.get("COM_ABS", "000")).zfill(3)  # souvent "000"
+    section = str(props["SECTION"]).upper().rjust(2, "0")
+    feuille = str(props["FEUILLE"]).zfill(2)
+
+    insee = f"{code_dep}{code_com}"
+    filecode = f"{code_dep}{code_com}{com_abs}{section}{feuille}"
+    return (
+        f"https://cadastre.data.gouv.fr/data/dgfip-pci-vecteur/"
+        f"{CADASTRE_MILLESIME}/dxf/feuilles/{code_dep}/{insee}/dxf-{filecode}.tar.bz2"
+    )
+
 @app.get("/sheet/by-point")
 async def sheet_by_point(lon: float = Query(...), lat: float = Query(...)):
-    # On utilise les clés EXISTANTES de config.py
-    base = CONFIG.cadastre_wfs_base
-    typename = CONFIG.cadastre_typename
-    version = "2.0.0"  # valeur par défaut robuste pour le WFS data.geopf.fr
+    """
+    Renvoie un lien direct DXF-PCI (DGFiP) pour la feuille cadastrale
+    contenant le point (lon, lat).
+    """
+    props = _feuille_feature_by_point(lon, lat)
+    url = _dxf_feuille_url(props)
+    return {
+        "download_url": url,
+        "id_feuille": f'{props["CODE_DEP"]}{props["CODE_COM"]}{props.get("COM_ABS","000")}{props["SECTION"]}{str(props["FEUILLE"]).zfill(2)}',
+        "source": "DGFiP — PCI vecteur DXF (feuille entière)",
+    }
 
-    if not base or not typename:
-        raise HTTPException(status_code=500, detail="IGN WFS non configuré")
-
-    url = wfs_shapezip_url(base, typename, lon, lat, version)
-    return {"download_url": url, "source": "IGN — Parcellaire Express (feuille)"}
-
-
+# ---------- PLU ----------
 @app.get("/plu/by-point")
 async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
+    """
+    Laisse la logique WFS en place si tu as une source WFS.
+    (Patch minimal: évite CONFIG.ign_version qui n'existe pas)
+    """
     if "RENSEIGNER" in (CONFIG.gpu_base + CONFIG.gpu_typename):
         raise HTTPException(status_code=500, detail="GPU WFS non configuré (à renseigner dans config.py)")
-    url = wfs_shapezip_url(CONFIG.gpu_base, CONFIG.gpu_typename, lon, lat, CONFIG.ign_version)
+    url = wfs_shapezip_url(CONFIG.gpu_base, CONFIG.gpu_typename, lon, lat, WFS_VERSION)
     return {"download_url": url, "atom_links": [], "note": "Brancher la liste ATOM selon la commune/INSEE."}
 
+# ---------- Atlas Patrimoines ----------
 @app.get("/heritage/by-point")
 async def heritage_by_point(lon: float = Query(...), lat: float = Query(...)):
+    """
+    Patch minimal: évite CONFIG.ign_version qui n'existe pas.
+    Attention: si atlas_base contient déjà '?map=...', gérer '&' au lieu de '?' si besoin.
+    """
     if "RENSEIGNER" in (CONFIG.atlas_base + CONFIG.atlas_typename):
         raise HTTPException(status_code=500, detail="Atlas WFS non configuré (à renseigner dans config.py)")
-    url = wfs_shapezip_url(CONFIG.atlas_base, CONFIG.atlas_typename, lon, lat, CONFIG.ign_version)
+    url = wfs_shapezip_url(CONFIG.atlas_base, CONFIG.atlas_typename, lon, lat, WFS_VERSION)
     return {"download_url": url}
 
 # -------------------------
