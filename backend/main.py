@@ -51,10 +51,17 @@ def health():
 
 @app.get("/sheet/by-point")
 async def sheet_by_point(lon: float = Query(...), lat: float = Query(...)):
-    if not CONFIG.ign_base or not CONFIG.ign_feuille_typename:
+    # On utilise les clés EXISTANTES de config.py
+    base = CONFIG.cadastre_wfs_base
+    typename = CONFIG.cadastre_typename
+    version = "2.0.0"  # valeur par défaut robuste pour le WFS data.geopf.fr
+
+    if not base or not typename:
         raise HTTPException(status_code=500, detail="IGN WFS non configuré")
-    url = wfs_shapezip_url(CONFIG.ign_base, CONFIG.ign_feuille_typename, lon, lat, CONFIG.ign_version)
+
+    url = wfs_shapezip_url(base, typename, lon, lat, version)
     return {"download_url": url, "source": "IGN — Parcellaire Express (feuille)"}
+
 
 @app.get("/plu/by-point")
 async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
