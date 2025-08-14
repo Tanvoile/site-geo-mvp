@@ -507,3 +507,66 @@ async def airport_check(
         "closest_airport_latlon": (closest[1], closest[0]) if closest else None,  # (lat, lon)
         "buffer_m": buffer_m,
     }
+
+    # -------------------------
+    #  Check PLU/RNU/CC/none
+    # -------------------------
+    
+    @app.get("/urbanisme/status/by-point")
+async def urbanisme_status_by_point(lon: float = Query(...), lat: float = Query(...)):
+    base = CONFIG.gpu_base
+    if not base:
+        raise HTTPException(status_code=500, detail="GPU API non configuré dans config.py")
+
+    geom = {"type": "Point", "coordinates": [lon, lat]}
+    async with httpx.AsyncClient(timeout=15) as client:
+        # Commune + info RNU
+        r_muni = await client.get(f"{base}/municipality", params={"geom": json.dumps(geom)})
+        r_muni.raise_for_status()
+        muni = (r_muni.json().get("features") or [])
+        if not muni:
+            return {"status": "Aucune commune trouvée", "details": {}}
+        mprops = muni[0].get("properties") or {}
+        insee = mprops.get("insee")
+        commune = mprops.get("name")
+        is_rnu = bool(mprops.get("is_rnu"))
+
+        if is_rnu:
+            return {"status": "RNU", "insee": insee, "commune": commune}
+
+        # Type de document d'urbanisme
+        r_doc = await client.get(f"{base}/document", params={"geom": json.dumps(geom)})
+        r_doc.raise_for_status()
+        docs = (r_doc.json().get("features") or [])
+        if not docs:
+            return {"status": "Aucun document d'urbanisme publié sur GPU", "insee": insee, "commune": commune}
+
+        dprops = docs[0].get("properties") or {}
+        du_type = (dprops.get("du_type") or "").upper()
+        doc_id = dprops.get("id")
+        partition = dprops.get("partition")
+
+        if du_type == "CC":
+            return {
+                "status": "Carte communale",
+                "insee": insee, "commune": commune,
+                "du_type": du_type, "partition": partition, "doc_id": doc_id
+            }
+
+        # Vérifier si zonage vectorisé disponible
+        r_zone = await client.get(f"{base}/zone-urba", params={"geom": json.dumps(geom)})
+        r_zone.raise_for_status()
+        zones = (r_zone.json().get("features") or [])
+        if not zones:
+            return {
+                "status": "Document trouvé mais zonage indisponible",
+                "insee": insee, "commune": commune,
+                "du_type": du_type, "partition": partition, "doc_id": doc_id
+            }
+
+        return {
+            "status": "Zonage disponible",
+            "insee": insee, "commune": commune,
+            "du_type": du_type, "partition": partition, "doc_id": doc_id
+        }
+
