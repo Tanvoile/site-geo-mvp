@@ -386,6 +386,103 @@ async def heritage_by_point(lon: float = Query(...), lat: float = Query(...)):
     url = wfs_shapezip_url(CONFIG.atlas_base, CONFIG.atlas_typename, lon, lat, WFS_VERSION)
     return {"download_url": url}
 
+    # main.py (extrait)
+import json
+from typing import Any, Dict, List, Tuple
+
+# … (imports existants + app, CORS, etc.)
+
+async def _atlas_hits_for_point(base: str, typename: str, lon: float, lat: float, geom_field: str = "geom") -> dict:
+    """
+    Interroge le WFS MapServer de l’Atlas au point donné.
+    On demande du GeoJSON (si dispo) ; sinon GML et on renvoie features = [].
+    """
+    # Essai GeoJSON (MapServer WFS 1.0.0/2.0.0 accepte souvent application/json)
+    params = {
+        "SERVICE": "WFS",
+        "VERSION": "2.0.0",
+        "REQUEST": "GetFeature",
+        "TYPENAMES": typename,
+        "SRSNAME": "EPSG:4326",
+        "OUTPUTFORMAT": "application/json",
+        "CQL_FILTER": f"INTERSECTS({geom_field},SRID=4326;POINT({lon} {lat}))",
+    }
+    url = f"{base}&{str(httpx.QueryParams(params))}"
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.get(url)
+        r.raise_for_status()
+        data = r.json()
+        features = data.get("features", [])
+    except Exception:
+        # Secours: si GeoJSON indisponible, renvoyer vide mais non bloquant
+        features = []
+
+    def best_label(props: Dict[str, Any]) -> str:
+        # Cherche un champ "nom" / "libelle" / "appel" / "titre" / "appellation" pour afficher lisible
+        candidates = ["nom", "Nom", "NOM", "libelle", "LIBELLE", "intitule", "INTITULE",
+                      "appellation", "APPELLATION", "titre", "TITRE", "denomination", "DENOMINATION"]
+        for c in candidates:
+            if c in props and props[c]:
+                return str(props[c])
+        # fallback : premier champ non vide
+        for k, v in props.items():
+            if isinstance(v, (str, int, float)) and str(v).strip():
+                return f"{k}: {v}"
+        return "(sans libellé)"
+
+    out = []
+    for f in features:
+        props = f.get("properties", {}) or {}
+        out.append({
+            "id": f.get("id"),
+            "label": best_label(props),
+            "properties": props  # tu pourras piocher un détail si besoin
+        })
+    return {"count": len(out), "features": out}
+
+@app.get("/heritage/summary/by-point")
+async def heritage_summary_by_point(lon: float = Query(...), lat: float = Query(...)):
+    """
+    Récap pour le front : pour chaque couche Atlas, indique si le point est dedans
+    et liste *quelques* libellés/éléments trouvés.
+    """
+    layers = getattr(CONFIG, "atlas_layers", {})
+    if not layers:
+        raise HTTPException(status_code=500, detail="Aucune couche Atlas configurée.")
+
+    results = {}
+    total_hits = 0
+
+    for key, meta in layers.items():
+        base = meta["base"]
+        tname = meta["typename"]
+        pretty = meta.get("pretty", key)
+        try:
+            res = await _atlas_hits_for_point(base, tname, lon, lat, getattr(CONFIG, "atlas_geom_field", "geom"))
+            results[key] = {
+                "pretty": pretty,
+                "count": res["count"],
+                "hits": res["features"][:10],  # ne renvoie que 10 items max pour le front (lisibilité)
+            }
+            total_hits += res["count"]
+        except Exception as e:
+            results[key] = {
+                "pretty": pretty,
+                "count": 0,
+                "hits": [],
+                "error": str(e),
+            }
+
+    summary = {
+        "any_protection": total_hits > 0,
+        "total_hits": total_hits,
+        "layers": results,
+    }
+    return summary
+
+
 # -------------------------
 #    KMZ/KML: parsing
 # -------------------------
