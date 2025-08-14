@@ -57,7 +57,8 @@ def wfs_shapezip_url(base: str, typename: str, lon: float, lat: float, version: 
         "typeNames": typename,
         "outputFormat": "shape-zip",
         "srsName": "EPSG:4326",
-        "CQL_FILTER": f"INTERSECTS(the_geom,POINT({lon} {lat}))",
+        # IMPORTANT: géométrie = geom + SRID explicite
+        "CQL_FILTER": f"INTERSECTS(geom,SRID=4326;POINT({lon} {lat}))",
     }
     query = str(httpx.QueryParams(params))
     return f"{base}?{query}"
@@ -73,8 +74,11 @@ def health():
 # ---------- DXF-PCI FEUILLE (DGFiP) ----------
 def _feuille_feature_by_point(lon: float, lat: float) -> dict:
     """
-    Cherche la feuille qui CONTIENT le point (lon, lat) en WGS84.
-    Si rien (point sur une limite), repli avec un très petit tampon via DWITHIN.
+    Cherche la feuille qui contient/intersecte le point (lon, lat) en WGS84.
+    Stratégie :
+      1) INTERSECTS (le plus robuste, y.c. bords)
+      2) DWITHIN avec tout petit tampon (0.5 m)
+      3) CONTAINS (au cas où)
     """
     base_params = {
         "service": "WFS",
@@ -85,24 +89,30 @@ def _feuille_feature_by_point(lon: float, lat: float) -> dict:
         "outputFormat": "application/json",
     }
 
-    # 1) Déterministe : feuille qui contient le point
-    p1 = dict(base_params, CQL_FILTER=f"CONTAINS(the_geom,POINT({lon} {lat}))")
-    r = httpx.get(WFS_BASE, params=p1, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-    feats = data.get("features", [])
-
-    # 2) Fallback bord de feuille : minuscule tampon
-    if not feats:
-        p2 = dict(base_params, CQL_FILTER=f"DWITHIN(the_geom,POINT({lon} {lat}), 0.15, meters)")
-        r = httpx.get(WFS_BASE, params=p2, timeout=20)
+    def _call(params):
+        r = httpx.get(WFS_BASE, params=params, timeout=20)
         r.raise_for_status()
         data = r.json()
-        feats = data.get("features", [])
+        return data.get("features", [])
+
+    # 1) INTERSECTS
+    p1 = dict(base_params, CQL_FILTER=f"INTERSECTS(geom,SRID=4326;POINT({lon} {lat}))")
+    feats = _call(p1)
+
+    # 2) DWITHIN (mini buffer)
+    if not feats:
+        p2 = dict(base_params, CQL_FILTER=f"DWITHIN(geom,SRID=4326;POINT({lon} {lat}),0.5,meters)")
+        feats = _call(p2)
+
+    # 3) CONTAINS
+    if not feats:
+        p3 = dict(base_params, CQL_FILTER=f"CONTAINS(geom,SRID=4326;POINT({lon} {lat}))")
+        feats = _call(p3)
 
     if not feats:
         raise HTTPException(status_code=404, detail="Aucune feuille trouvée pour ce point.")
-    return feats[0]["properties"]  # on prend la 1re si plusieurs
+    # on retourne les propriétés de la 1re feature
+    return feats[0]["properties"]
 
 def _normalize_section(sec: str) -> str:
     if sec is None:
@@ -137,7 +147,7 @@ async def sheet_by_point(
 ):
     """
     Renvoie un lien direct DXF-PCI (DGFiP) pour la feuille cadastrale
-    contenant le point (lon, lat).
+    contenant/intersectant le point (lon, lat).
     """
     props = _feuille_feature_by_point(lon, lat)
     url = _dxf_feuille_url(props)
