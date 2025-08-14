@@ -5,65 +5,114 @@ from pydantic import BaseModel
 
 class Settings(BaseModel):
     # =========================================================================
-    # 1) Feuille cadastrale (IGN – Parcellaire Express, WFS public)
-    #    -> déjà OK chez toi ; je laisse la même base standard data.geopf.fr
+    # 1) IGN — Parcellaire Express (Feuilles cadastrales, WFS public)
+    #    (noms alignés avec main.py : ign_base / ign_feuille_typename / ign_version)
     # =========================================================================
-    cadastre_wfs_base: str = "https://data.geopf.fr/wfs/ows"
-    cadastre_typename: str = "CADASTRALPARCELS.PARCELLAIRE_EXPRESS:feuille"
+    ign_base: str = "https://data.geopf.fr/wfs/ows"
+    ign_feuille_typename: str = "CADASTRALPARCELS.PARCELLAIRE_EXPRESS:feuille"
+    ign_version: str = "2.0.0"
+
+    # Aliases "legacy" (si du code ailleurs les utilise encore)
+    cadastre_wfs_base: str = ign_base
+    cadastre_typename: str = ign_feuille_typename
 
     # =========================================================================
-    # 2) GPU (Géoportail de l’Urbanisme) — RECOMMANDÉ: API Carto (REST)
-    #    Avantage : endpoint stable, et on interroge directement la ressource
-    #    “zone-urba” par point/BBOX sans se battre avec 36 WFS hétérogènes.
-    #    Si ton code construit déjà une URL WFS brute, vois l’alternative WFS
-    #    plus bas (section « Option WFS brute (non conseillée) »).
+    # 2) GPU (Géoportail de l’Urbanisme) — API Carto (REST) recommandée
     # =========================================================================
-    # [LIGNE À MODIF SI BESOIN] (vers ~22)
     gpu_base: str = "https://apicarto.ign.fr/api/gpu"
-    # Ressource cible (ton backend peut utiliser ça pour composer l’URL finale)
     gpu_typename: str = "zone-urba"
-
-    # Exemple d’appel que ton backend peut construire côté serveur :
+    # Exemples côté serveur (à titre indicatif) :
     #   GET {gpu_base}/{gpu_typename}?geom=POINT({lon} {lat})&srid=4326
-    # ou avec bbox:
-    #   GET {gpu_base}/{gpu_typename}?bbox={minx},{miny},{maxx},{maxy}&srid=4326
+    #   GET {gpu_base}/{gpu_typename}?bbox=minx,miny,maxx,maxy&srid=4326
 
-    # ── Option WFS brute (non conseillée) ─────────────────────────────────────
-    # Le GPU n’expose pas un unique WFS "national" de zonage homogène ;
-    # chaque DU a son flux, souvent via ATOM/WFS producteur. Si tu tiens
-    # absolument à WFS, laisse gpu_base vide et gère au cas par cas.
+    # Option WFS brute (non conseillée, laissé vide volontairement)
     # gpu_base_wfs: str = ""
-    # gpu_typename_wfs: str = "PLU:ZONE_URBA"  # schéma CNIG générique (indicatif)
+    # gpu_typename_wfs: str = "PLU:ZONE_URBA"
 
     # =========================================================================
-    # 3) Atlas des Patrimoines (Ministère Culture) — WFS MapServer
-    #    Attention : l’Atlas publie des couches « par jeu » (pas un unique WFS).
-    #    Ci‑dessous, je te mets une couche **SPR (sites patrimoniaux remarquables)**
-    #    FR‑métropole via leur MapServer (couche agrégée). Si tu veux d’autres
-    #    couches (ZPPAUP historiques, périmètres MH, etc.), change `atlas_typename`
-    #    et éventuellement l’URL (certaines couches sont par région/département).
+    # 3) Atlas des Patrimoines — couches MapServer WFS par jeu de données
+    #    On centralise ici les couches utiles pour ton récap protections.
+    #    Si une couche retourne 0 alors que tu es sûr d’être dedans, on ajustera
+    #    le typename ou le map=… (certains jeux sont régionaux).
     # =========================================================================
-    # [LIGNE À MODIF SI BESOIN] (vers ~46)
-    atlas_base: str = (
-        "http://atlas.patrimoines.culture.fr/cgi-bin/mapserv"
-        "?map=/home/atlas-mapserver/production/var/data/MD_865/MD_865.map"
-    )
-    atlas_typename: str = "MD_865"  # SPR (ex couche agrégée). À adapter si besoin.
+    atlas_layers: dict = {
+        # Sites patrimoniaux remarquables (SPR)
+        "spr": {
+            "base": (
+                "http://atlas.patrimoines.culture.fr/cgi-bin/mapserv"
+                "?map=/home/atlas-mapserver/production/var/data/MD_865/MD_865.map"
+            ),
+            "typename": "MD_865",
+            "pretty": "Site patrimonial remarquable (SPR)",
+        },
+        # Ex-ZPPAUP / AVAP (anciennes ZPPA)
+        "zppaup_avap": {
+            "base": (
+                "http://atlas.patrimoines.culture.fr/cgi-bin/mapserv"
+                "?map=/home/atlas-mapserver/production/var/data/MD_616/MD_616.map"
+            ),
+            "typename": "MD_616",
+            "pretty": "ZPPAUP / AVAP (historique)",
+        },
+        # Monuments historiques classés
+        "mh_classes": {
+            "base": (
+                "http://atlas.patrimoines.culture.fr/cgi-bin/mapserv"
+                "?map=/home/atlas-mapserver/production/var/data/MD_001/MD_001.map"
+            ),
+            "typename": "MD_001",
+            "pretty": "Monument historique classé",
+        },
+        # Monuments historiques inscrits
+        "mh_inscrits": {
+            "base": (
+                "http://atlas.patrimoines.culture.fr/cgi-bin/mapserv"
+                "?map=/home/atlas-mapserver/production/var/data/MD_002/MD_002.map"
+            ),
+            "typename": "MD_002",
+            "pretty": "Monument historique inscrit",
+        },
+        # Protection au titre des abords (rayon 500 m ou périmètre délimité)
+        "abords_mh": {
+            "base": (
+                "http://atlas.patrimoines.culture.fr/cgi-bin/mapserv"
+                "?map=/home/atlas-mapserver/production/var/data/MD_041/MD_041.map"
+            ),
+            "typename": "MD_041",
+            "pretty": "Protection au titre des abords (MH)",
+        },
+        # Sites classés
+        "sites_classes": {
+            "base": (
+                "http://atlas.patrimoines.culture.fr/cgi-bin/mapserv"
+                "?map=/home/atlas-mapserver/production/var/data/MD_508/MD_508.map"
+            ),
+            "typename": "MD_508",
+            "pretty": "Site classé",
+        },
+        # Sites inscrits
+        "sites_inscrits": {
+            "base": (
+                "http://atlas.patrimoines.culture.fr/cgi-bin/mapserv"
+                "?map=/home/atlas-mapserver/production/var/data/MD_509/MD_509.map"
+            ),
+            "typename": "MD_509",
+            "pretty": "Site inscrit",
+        },
+    }
 
-    # Exemple d’appel WFS que ton backend peut construire :
-    #   {atlas_base}&SERVICE=WFS&VERSION=1.0.0&REQUEST=GetFeature
-    #   &TYPENAME={atlas_typename}&SRS=EPSG:4326
-    #   &BBOX={miny},{minx},{maxy},{maxx}   # (attention ordre selon version)
+    # Champ géométrique le plus courant sur l’Atlas (modifiable au besoin)
+    atlas_geom_field: str = "geom"
 
     # =========================================================================
-    # 4) Aéroports (anti‑proximité) — chemin KML dans l’image déployée
+    # 4) Aéroports — chemin du fichier (KML ou KMZ)
     # =========================================================================
-    # [LIGNE À MODIF SI BESOIN] (vers ~62)
+    # Mets .kmz si c’est ce que tu as en prod : "backend/data/aerodromes_fr.kmz"
     aerodromes_kml: str = "backend/data/aerodromes_fr.kmz"
 
     # =========================================================================
-    # 5) Divers
+    # 5) CORS
     # =========================================================================
-    cors_allow_origins: list[str] = ["*"]  # front sur Render : OK
+    cors_allow_origins: list[str] = ["*"]
 
 CONFIG = Settings()
