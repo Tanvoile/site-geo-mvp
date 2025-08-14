@@ -273,7 +273,7 @@ async def _apicarto_zone_urba_by_point(lon: float, lat: float) -> dict | None:
     feats = data.get("features", []); return feats[0] if feats else None
 
 async def _gpu_list_document_files(doc_id: str) -> list[dict]:
-    url = f"{GPU_API_BASE}/document/{doc_id}/files"}
+    url = f"{GPU_API_BASE}/document/{doc_id}/files"
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(url)
         if r.status_code == 404:
