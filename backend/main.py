@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import zipfile
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -172,24 +173,21 @@ async def sheet_by_point(
 @app.get("/plu/by-point")
 async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
     """
-    Zonage PLU via API GPU (zone-urba) pour un point WGS84.
-    L'API exige geom="POINT(x y)" (WKT entre guillemets).
+    Zonage PLU via API Carto (module Urbanisme/GPU).
+    L'API attend geom=GeoJSON (WGS84), pas du WKT.
     """
     if not CONFIG.gpu_base or not CONFIG.gpu_typename:
         raise HTTPException(status_code=500, detail="GPU API non configuré dans config.py")
 
     api_url = f"{CONFIG.gpu_base}/{CONFIG.gpu_typename}"
 
-    # IMPORTANT: guillemets autour du WKT pour satisfaire l'API GPU
-    params = {
-        "geom": f"\"POINT({lon} {lat})\"",
-        "srid": 4326,
-    }
+    # IMPORTANT: GeoJSON encodé en JSON, pas WKT
+    geom_geojson = {"type": "Point", "coordinates": [lon, lat]}
+    params = {"geom": json.dumps(geom_geojson)}  # httpx fera l'URL-encoding
 
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.get(api_url, params=params)
         if r.status_code != 200:
-            # remonte l'erreur API pour debug
             raise HTTPException(status_code=500, detail=f"Erreur API GPU: {r.text}")
         data = r.json()
 
@@ -197,18 +195,21 @@ async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
     if not feats:
         return {
             "note": "Aucune zone PLU trouvée à ce point.",
-            "download_url": str(r.url),  # URL finale avec encodage
+            "download_url": str(r.url),  # URL finale appelée (encodée)
             "atom_links": []
         }
 
-    zone_props = feats[0].get("properties", {}) or {}
+    props = feats[0].get("properties", {}) or {}
+    # D'après la doc, 'libelle' (court) et 'libelong' (long) existent sur zone-urba. :contentReference[oaicite:1]{index=1}
+    zone_code = props.get("libelle") or props.get("libelleZone")
     return {
-        "zone_code": zone_props.get("libelleZone") or zone_props.get("libelle"),
-        "nature": zone_props.get("nature"),
-        "type": zone_props.get("typeZone"),
+        "zone_code": zone_code,
+        "libelle_long": props.get("libelong"),
+        "nature": props.get("nature"),
+        "type": props.get("typeZone") or props.get("typezone"),
         "download_url": str(r.url),
         "atom_links": [],
-        "raw": zone_props
+        "raw": props
     }
 
 # ---------- Atlas Patrimoines ----------
