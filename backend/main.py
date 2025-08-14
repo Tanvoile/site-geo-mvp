@@ -70,6 +70,21 @@ def wfs_shapezip_url(base: str, typename: str, lon: float, lat: float, version: 
     }
     return build_wfs_url(base, params)
 
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+# WARM-UP WFS (nouveau)
+async def _wfs_warmup(base: str):
+    """
+    Ping MapServer/GeoServer pour 'réveiller' le WFS.
+    On ignore silencieusement les erreurs : best-effort.
+    """
+    try:
+        url = build_wfs_url(base, {"SERVICE": "WFS", "REQUEST": "GetCapabilities"})
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.get(url)
+    except Exception:
+        pass
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
 # -------------------------
 #          Routes
 # -------------------------
@@ -258,7 +273,7 @@ async def _apicarto_zone_urba_by_point(lon: float, lat: float) -> dict | None:
     feats = data.get("features", []); return feats[0] if feats else None
 
 async def _gpu_list_document_files(doc_id: str) -> list[dict]:
-    url = f"{GPU_API_BASE}/document/{doc_id}/files"
+    url = f"{GPU_API_BASE}/document/{doc_id}/files"}
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(url)
         if r.status_code == 404:
@@ -340,13 +355,19 @@ async def plu_graphic_by_point(
 
 # ---------- Atlas Patrimoines (single-link, compat) ----------
 @app.get("/heritage/by-point")
-async def heritage_by_point(lon: float = Query(...), lat: float = Query(...)):
+async def heritage_by_point(
+    lon: float = Query(...),
+    lat: float = Query(...),
+    warmup: bool = Query(True)
+):
     """
     Renvoie un lien WFS shape-zip (utile si tu veux télécharger la géo).
     NB: utilise build_wfs_url pour gérer les bases avec '?map=...'.
     """
     if not getattr(CONFIG, "atlas_base", None) or not getattr(CONFIG, "atlas_typename", None):
         raise HTTPException(status_code=500, detail="Atlas WFS non configuré (atlas_base/atlas_typename).")
+    if warmup:
+        await _wfs_warmup(CONFIG.atlas_base)
     url = wfs_shapezip_url(CONFIG.atlas_base, CONFIG.atlas_typename, lon, lat, WFS_VERSION)
     return {"download_url": url}
 
@@ -423,7 +444,11 @@ async def _atlas_hits_for_point(base: str, typename: str, lon: float, lat: float
     return {"count": len(out), "features": out}
 
 @app.get("/heritage/summary/by-point")
-async def heritage_summary_by_point(lon: float = Query(...), lat: float = Query(...)):
+async def heritage_summary_by_point(
+    lon: float = Query(...),
+    lat: float = Query(...),
+    warmup: bool = Query(True, description="Fait un GetCapabilities avant les GetFeature")
+):
     """
     Récap pour le front : pour chaque couche Atlas, indique si le point est dedans
     et liste *quelques* libellés/éléments trouvés.
@@ -450,6 +475,8 @@ async def heritage_summary_by_point(lon: float = Query(...), lat: float = Query(
         pretty = meta.get("pretty", key)
         gfield = meta.get("geom_field", getattr(CONFIG, "atlas_geom_field", "geom"))
         try:
+            if warmup:
+                await _wfs_warmup(base)  # <<< warm-up ici
             res = await _atlas_hits_for_point(base, tname, lon, lat, gfield)
             results[key] = {"pretty": pretty, "count": res["count"], "hits": res["features"][:10]}
             total_hits += res["count"]
