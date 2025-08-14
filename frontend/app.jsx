@@ -147,8 +147,8 @@ function App() {
         {airport ? (
           <div>
             <p>Statut: <b>{airport.status}</b> — Distance min: {airport.distance_m} m</p>
-            {airport.closest_airport_lonlat && (
-              <p>Aéroport le plus proche: lon/lat {airport.closest_airport_lonlat[0]}, {airport.closest_airport_lonlat[1]}</p>
+            {airport.closest_airport_latlon && (
+            <p>Aéroport le plus proche: lat/lon {airport.closest_airport_latlon[0]}, {airport.closest_airport_latlon[1]}</p>
             )}
           </div>
         ) : <p>Aucune requête effectuée.</p>}
