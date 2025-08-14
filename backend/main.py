@@ -31,8 +31,21 @@ WFS_BASE = getattr(CONFIG, "cadastre_wfs_base", "https://data.geopf.fr/wfs/ows")
 TYPENAME_FEUILLE = getattr(
     CONFIG, "cadastre_typename", "CADASTRALPARCELS.PARCELLAIRE_EXPRESS:feuille"
 )
-# Tu as demandé un millésime fixe pour coller au lien cible
+# millésime demandé pour coller au lien cible (peut être "latest")
 CADASTRE_MILLESIME = getattr(CONFIG, "cadastre_millesime", "2025-04-01")
+
+# Helper: lecture de props tolérante à la casse / alias
+def _pick(props: dict, *keys, default=None):
+    """Retourne props[k] en tolérant maj/min et alias, sinon default."""
+    for k in keys:
+        if k in props:
+            return props[k]
+        lk, uk = k.lower(), k.upper()
+        if lk in props:
+            return props[lk]
+        if uk in props:
+            return props[uk]
+    return default
 
 # --- Utilitaire WFS (shape-zip, filtré par point WGS84) ---
 # (utilisé par d'autres routes)
@@ -72,14 +85,14 @@ def _feuille_feature_by_point(lon: float, lat: float) -> dict:
         "outputFormat": "application/json",
     }
 
-    # 1) Déterministe : la feuille qui contient vraiment le point
+    # 1) Déterministe : feuille qui contient le point
     p1 = dict(base_params, CQL_FILTER=f"CONTAINS(the_geom,POINT({lon} {lat}))")
     r = httpx.get(WFS_BASE, params=p1, timeout=20)
     r.raise_for_status()
     data = r.json()
     feats = data.get("features", [])
 
-    # 2) Fallback bord de feuille : minuscule tampon autour du point
+    # 2) Fallback bord de feuille : minuscule tampon
     if not feats:
         p2 = dict(base_params, CQL_FILTER=f"DWITHIN(the_geom,POINT({lon} {lat}), 0.15, meters)")
         r = httpx.get(WFS_BASE, params=p2, timeout=20)
@@ -91,18 +104,23 @@ def _feuille_feature_by_point(lon: float, lat: float) -> dict:
         raise HTTPException(status_code=404, detail="Aucune feuille trouvée pour ce point.")
     return feats[0]["properties"]  # on prend la 1re si plusieurs
 
+def _normalize_section(sec: str) -> str:
+    if sec is None:
+        return ""
+    s = str(sec).strip().upper()
+    return s if len(s) != 1 else "0" + s  # ex. "C" -> "0C"
+
 def _dxf_feuille_url(props: dict) -> str:
     """
     Construit l'URL 'cadastre.data.gouv.fr' du DXF-PCI (tar.bz2) de la feuille entière.
     Schéma: /{millesime}/dxf/feuilles/{DEP}/{INSEE}/dxf-{DEP}{COM}{COM_ABS}{SECTION}{FEUILLE}.tar.bz2
     """
-    code_dep = str(props["CODE_DEP"]).zfill(2)
-    code_com = str(props["CODE_COM"]).zfill(3)
-    com_abs = str(props.get("COM_ABS", "000")).zfill(3)  # souvent "000"
-    section = str(props["SECTION"]).strip().upper()
-    if len(section) == 1:  # ex. "C" -> "0C"
-        section = "0" + section
-    feuille = str(props["FEUILLE"]).zfill(2)
+    code_dep = str(_pick(props, "CODE_DEP", "code_dep", "dep")).zfill(2)
+    code_com = str(_pick(props, "CODE_COM", "code_com", "com")).zfill(3)
+    com_abs  = _pick(props, "COM_ABS", "com_abs")
+    com_abs  = str(com_abs if com_abs is not None else "000").zfill(3)
+    section  = _normalize_section(_pick(props, "SECTION", "section"))
+    feuille  = str(_pick(props, "FEUILLE", "feuille")).zfill(2)
 
     insee = f"{code_dep}{code_com}"
     filecode = f"{code_dep}{code_com}{com_abs}{section}{feuille}"
@@ -112,18 +130,33 @@ def _dxf_feuille_url(props: dict) -> str:
     )
 
 @app.get("/sheet/by-point")
-async def sheet_by_point(lon: float = Query(...), lat: float = Query(...)):
+async def sheet_by_point(
+    lon: float = Query(...),
+    lat: float = Query(...),
+    debug: bool = Query(False)
+):
     """
     Renvoie un lien direct DXF-PCI (DGFiP) pour la feuille cadastrale
     contenant le point (lon, lat).
     """
     props = _feuille_feature_by_point(lon, lat)
     url = _dxf_feuille_url(props)
-    return {
+
+    sec_for_id = _normalize_section(_pick(props, "SECTION", "section"))
+    payload = {
         "download_url": url,
-        "id_feuille": f'{props["CODE_DEP"]}{props["CODE_COM"]}{props.get("COM_ABS","000")}{props["SECTION"]}{str(props["FEUILLE"]).zfill(2)}',
+        "id_feuille": (
+            f'{_pick(props,"CODE_DEP","code_dep")}'
+            f'{_pick(props,"CODE_COM","code_com")}'
+            f'{_pick(props,"COM_ABS","com_abs") or "000"}'
+            f'{sec_for_id}'
+            f'{str(_pick(props,"FEUILLE","feuille")).zfill(2)}'
+        ),
         "source": "DGFiP — PCI vecteur DXF (feuille entière)",
     }
+    if debug:
+        payload["wfs_props"] = props
+    return payload
 
 # ---------- PLU ----------
 @app.get("/plu/by-point")
