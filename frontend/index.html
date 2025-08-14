@@ -5,8 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Site GEO — MVP</title>
     <style>
-      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
-      #root { max-width: 900px; margin: 32px auto; padding: 0 12px; }
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      }
+      #root {
+        max-width: 900px;
+        margin: 32px auto;
+        padding: 0 12px;
+      }
     </style>
     <script>
       // Pointe vers ton backend Render
@@ -23,7 +29,7 @@
     <!-- Babel pour exécuter le JSX dans le navigateur -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    <!-- Ton app en JSX (pas de type="module", pas d'import ESM) -->
+    <!-- Ton app en JSX -->
     <script type="text/babel" data-presets="react,env" src="./app.jsx"></script>
   </body>
 </html>
