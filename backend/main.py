@@ -242,7 +242,7 @@ async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
         "reglement_pdfs": reglement_urls,
         "raw": props
     }
-    
+
 # ---------- RÈGLEMENT GRAPHIQUE (plans de zonage) ----------
 GPU_API_BASE = "https://www.geoportail-urbanisme.gouv.fr/api"  # Swagger v5.x (files/details)
 APICARTO_GPU_BASE = getattr(CONFIG, "gpu_base", "https://apicarto.ign.fr/api/gpu")
@@ -306,7 +306,7 @@ async def plu_graphic_by_point(
     Renvoie les liens directs vers le règlement graphique (plans de zonage) pour le document couvrant le point.
     - Détermine le document via API Carto /zone-urba
     - Liste des pièces via GPU /api/document/{id}/files
-    - Filtre les 'règlement graphique / plan(s) de zonage'; essaie de cibler la planche selon le code de zone.
+    - Filtre les 'règlement graphique / plan(s) de zonage)'; essaie de cibler la planche selon le code de zone.
     """
     # 1) zonage au point
     feat = await _apicarto_zone_urba_by_point(lon, lat)
@@ -489,7 +489,7 @@ async def airport_check(
         raise HTTPException(status_code=500, detail=str(e))
 
     if not pts:
-        raise HTTPException(status_code=500, detail="Aucun point détecté (tags <coordinates> ou <gx:coord>).")
+        raise HTTPException(status_code=500, detail="Aucun point détecté (tags <coordinates> ou <gx:coord}).")
 
     dmin = None
     closest = None
@@ -508,11 +508,11 @@ async def airport_check(
         "buffer_m": buffer_m,
     }
 
-    # -------------------------
-    #  Check PLU/RNU/CC/none
-    # -------------------------
-    
-    @app.get("/urbanisme/status/by-point")
+# -------------------------
+#  Check PLU/RNU/CC/none
+# -------------------------
+
+@app.get("/urbanisme/status/by-point")
 async def urbanisme_status_by_point(lon: float = Query(...), lat: float = Query(...)):
     base = CONFIG.gpu_base
     if not base:
@@ -569,4 +569,3 @@ async def urbanisme_status_by_point(lon: float = Query(...), lat: float = Query(
             "insee": insee, "commune": commune,
             "du_type": du_type, "partition": partition, "doc_id": doc_id
         }
-
