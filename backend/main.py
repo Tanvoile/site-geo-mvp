@@ -31,10 +31,11 @@ WFS_BASE = getattr(CONFIG, "cadastre_wfs_base", "https://data.geopf.fr/wfs/ows")
 TYPENAME_FEUILLE = getattr(
     CONFIG, "cadastre_typename", "CADASTRALPARCELS.PARCELLAIRE_EXPRESS:feuille"
 )
-CADASTRE_MILLESIME = getattr(CONFIG, "cadastre_millesime", "2025-04-01")  # ex: "2025-04-01" ou "latest"
+# Tu as demandé un millésime fixe pour coller au lien cible
+CADASTRE_MILLESIME = getattr(CONFIG, "cadastre_millesime", "2025-04-01")
 
 # --- Utilitaire WFS (shape-zip, filtré par point WGS84) ---
-# (utilisé par d'autres routes; corrigé: srsName + the_geom)
+# (utilisé par d'autres routes)
 def wfs_shapezip_url(base: str, typename: str, lon: float, lat: float, version: str = WFS_VERSION) -> str:
     params = {
         "service": "WFS",
@@ -59,22 +60,33 @@ def health():
 # ---------- DXF-PCI FEUILLE (DGFiP) ----------
 def _feuille_feature_by_point(lon: float, lat: float) -> dict:
     """
-    Interroge la couche IGN 'feuille' et renvoie les propriétés de la feuille
-    qui intersecte le point (lon, lat) en WGS84.
+    Cherche la feuille qui CONTIENT le point (lon, lat) en WGS84.
+    Si rien (point sur une limite), repli avec un très petit tampon via DWITHIN.
     """
-    params = {
+    base_params = {
         "service": "WFS",
         "version": WFS_VERSION,
         "request": "GetFeature",
         "typeNames": TYPENAME_FEUILLE,
         "srsName": "EPSG:4326",
         "outputFormat": "application/json",
-        "CQL_FILTER": f"INTERSECTS(the_geom,POINT({lon} {lat}))",
     }
-    r = httpx.get(WFS_BASE, params=params, timeout=20)
+
+    # 1) Déterministe : la feuille qui contient vraiment le point
+    p1 = dict(base_params, CQL_FILTER=f"CONTAINS(the_geom,POINT({lon} {lat}))")
+    r = httpx.get(WFS_BASE, params=p1, timeout=20)
     r.raise_for_status()
     data = r.json()
     feats = data.get("features", [])
+
+    # 2) Fallback bord de feuille : minuscule tampon autour du point
+    if not feats:
+        p2 = dict(base_params, CQL_FILTER=f"DWITHIN(the_geom,POINT({lon} {lat}), 0.15, meters)")
+        r = httpx.get(WFS_BASE, params=p2, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        feats = data.get("features", [])
+
     if not feats:
         raise HTTPException(status_code=404, detail="Aucune feuille trouvée pour ce point.")
     return feats[0]["properties"]  # on prend la 1re si plusieurs
@@ -87,7 +99,9 @@ def _dxf_feuille_url(props: dict) -> str:
     code_dep = str(props["CODE_DEP"]).zfill(2)
     code_com = str(props["CODE_COM"]).zfill(3)
     com_abs = str(props.get("COM_ABS", "000")).zfill(3)  # souvent "000"
-    section = str(props["SECTION"]).upper().rjust(2, "0")
+    section = str(props["SECTION"]).strip().upper()
+    if len(section) == 1:  # ex. "C" -> "0C"
+        section = "0" + section
     feuille = str(props["FEUILLE"]).zfill(2)
 
     insee = f"{code_dep}{code_com}"
