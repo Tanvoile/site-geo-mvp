@@ -59,7 +59,7 @@ class Settings(BaseModel):
     # 4) Aéroports (anti‑proximité) — chemin KML dans l’image déployée
     # =========================================================================
     # [LIGNE À MODIF SI BESOIN] (vers ~62)
-    aerodromes_kml: str = "backend/data/aerodromes_fr.kml"
+    aerodromes_kml: str = "backend/data/aerodromes_fr.kmz"
 
     # =========================================================================
     # 5) Divers
