@@ -242,6 +242,137 @@ async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
         "reglement_pdfs": reglement_urls,
         "raw": props
     }
+    
+# ---------- RÈGLEMENT GRAPHIQUE (plans de zonage) ----------
+GPU_API_BASE = "https://www.geoportail-urbanisme.gouv.fr/api"  # Swagger v5.x (files/details)
+APICARTO_GPU_BASE = getattr(CONFIG, "gpu_base", "https://apicarto.ign.fr/api/gpu")
+
+def _looks_like_graphic_plan(title: str, filename: str | None = None) -> bool:
+    t = (title or "").lower()
+    f = (filename or "").lower()
+    hay = f"{t} {f}"
+    keys = [
+        "règlement graphique", "reglement graphique",
+        "plan de zonage", "plans de zonage", "planche",
+        "rg_", "rg-", "_rg", "zonage_", "zonage-"
+    ]
+    return any(k in hay for k in keys)
+
+async def _apicarto_zone_urba_by_point(lon: float, lat: float) -> dict | None:
+    """Retourne la première feature zone-urba intersectant le point (GeoJSON)."""
+    url = f"{APICARTO_GPU_BASE}/zone-urba"
+    geom = {"type": "Point", "coordinates": [lon, lat]}
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(url, params={"geom": json.dumps(geom)})
+        r.raise_for_status()
+        data = r.json()
+    feats = data.get("features", [])
+    return feats[0] if feats else None
+
+async def _gpu_list_document_files(doc_id: str) -> list[dict]:
+    """Liste des pièces d’un document GPU (titres, types, URLs directes)."""
+    url = f"{GPU_API_BASE}/document/{doc_id}/files"
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(url)
+        if r.status_code == 404:
+            return []
+        r.raise_for_status()
+        return r.json() if isinstance(r.json(), list) else []
+
+def _extract_doc_id_and_zone(props: dict) -> tuple[str | None, str | None, str | None]:
+    """
+    Essaie de récupérer: (gpu_doc_id, partition, code_zone).
+    Les noms de champs peuvent varier selon les producteurs → tolérance.
+    """
+    # id du document sur le GPU
+    gpu_doc_id = (
+        props.get("gpu_doc_id") or props.get("gpuDocId") or
+        props.get("iddocument") or props.get("idDocument") or
+        props.get("doc_id") or props.get("document")
+    )
+    # partition (ex: DU_33063 pour Bordeaux)
+    partition = props.get("partition") or props.get("Partition")
+    # code de zone utile pour matcher une planche
+    zone_code = props.get("libelle") or props.get("libelleZone") or props.get("LIBELLE")
+    return str(gpu_doc_id) if gpu_doc_id else None, str(partition) if partition else None, str(zone_code) if zone_code else None
+
+@app.get("/plu/graphic/by-point")
+async def plu_graphic_by_point(
+    lon: float = Query(...),
+    lat: float = Query(...),
+    strict_zone_match: bool = Query(True, description="Filtrer les planches contenant le code de zone dans le titre/fichier")
+):
+    """
+    Renvoie les liens directs vers le règlement graphique (plans de zonage) pour le document couvrant le point.
+    - Détermine le document via API Carto /zone-urba
+    - Liste des pièces via GPU /api/document/{id}/files
+    - Filtre les 'règlement graphique / plan(s) de zonage'; essaie de cibler la planche selon le code de zone.
+    """
+    # 1) zonage au point
+    feat = await _apicarto_zone_urba_by_point(lon, lat)
+    if not feat:
+        return {"note": "Aucune zone PLU trouvée à ce point.", "items": []}
+    props = feat.get("properties", {}) or {}
+    gpu_doc_id, partition, zone_code = _extract_doc_id_and_zone(props)
+    if not gpu_doc_id:
+        raise HTTPException(status_code=500, detail="Impossible d'identifier l'id du document GPU depuis zone-urba.")
+
+    # 2) pièces du document
+    files = await _gpu_list_document_files(gpu_doc_id)
+    if not files:
+        return {
+            "note": "Document trouvé mais aucune pièce listée (files).",
+            "gpu_doc_id": gpu_doc_id, "partition": partition, "zone_code": zone_code,
+            "items": []
+        }
+
+    # 3) filtrage 'règlement graphique' / 'plan(s) de zonage)'
+    items = []
+    for f in files:
+        # champs tolérants (selon versions)
+        title = f.get("title") or f.get("nom") or f.get("name") or ""
+        url = f.get("url") or f.get("href") or f.get("downloadUrl") or ""
+        ftype = (f.get("type") or f.get("category") or "").lower()
+        filename = (f.get("fileName") or f.get("filename") or "")
+        # a) si typé côté GPU
+        is_graphic_typed = any(k in ftype for k in ["reglement_graphique", "reglement-graphique", "document_graphique", "graphique"])
+        # b) sinon heuristique titre/nom
+        is_graphic_guessed = _looks_like_graphic_plan(title, filename)
+        if (is_graphic_typed or is_graphic_guessed) and url.startswith("http"):
+            items.append({
+                "title": title, "type": ftype, "url": url, "filename": filename
+            })
+
+    # 4) sélection automatique par 'code de zone' dans le titre/nom (si demandé)
+    selected = items
+    if zone_code and strict_zone_match:
+        z = str(zone_code).lower().replace(" ", "")
+        def _hit(it):
+            blob = f"{(it.get('title') or '')} {(it.get('filename') or '')}".lower().replace(" ", "")
+            return z in blob
+        narrowed = [it for it in items if _hit(it)]
+        if narrowed:
+            selected = narrowed
+
+    # 5) essayer de remonter aussi un "plan de repérage des planches" s'il existe
+    locating = []
+    for f in files:
+        title = (f.get("title") or f.get("nom") or "").lower()
+        if any(k in title for k in ["repérage", "reperage", "index des planches", "plan d'assemblage", "assemblage des planches"]):
+            u = f.get("url") or f.get("href") or ""
+            if u.startswith("http"):
+                locating.append({"title": f.get("title") or f.get("nom"), "url": u})
+
+    return {
+        "gpu_doc_id": gpu_doc_id,
+        "partition": partition,
+        "zone_code": zone_code,
+        "count_all_graphic": len(items),
+        "count_selected": len(selected),
+        "selected_planches": selected,         # notre meilleure estimation (peut être 1..n)
+        "all_graphic_plans": items,            # toutes les planches graphiques
+        "locating_maps": locating              # plan de repérage / assemblage si dispo
+    }
 
 # ---------- Atlas Patrimoines ----------
 @app.get("/heritage/by-point")
