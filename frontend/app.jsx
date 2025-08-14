@@ -9,14 +9,13 @@ const API = (path, qs) => {
   return `${base}${path}${q}`;
 };
 
-// Parse "lat, lon" (ou "lat lon", "lat;lon", etc.), tolère points/virgules
 function parseLatLon(str) {
   if (!str) return null;
   const nums = (str.match(/-?\d+(?:[.,]\d+)?/g) || []).slice(0, 2).map(v =>
     Number(v.replace(",", "."))
   );
   if (nums.length !== 2 || !nums.every(Number.isFinite)) return null;
-  const [lat, lon] = nums; // on suppose "lat, lon"
+  const [lat, lon] = nums;
   return { lat, lon };
 }
 
@@ -28,7 +27,7 @@ function App() {
   const [plu, setPlu] = useState(null);
   const [heritage, setHeritage] = useState(null);
   const [airport, setAirport] = useState(null);
-  const [urbanisme, setUrbanisme] = useState(null); // ← NEW
+  const [urbanisme, setUrbanisme] = useState(null);
   const [err, setErr] = useState("");
 
   const applyPasted = (text) => {
@@ -63,7 +62,6 @@ function App() {
     try { setPlu(await fetchJSON('/plu/by-point', { lon: lonNum, lat: latNum })); }
     catch (e) { setErr(prev => (prev ? prev + " | " : "") + "PLU: " + e.message); }
 
-    // NEW: statut d’urbanisme (RNU / CC / PLU dispo / etc.)
     try { setUrbanisme(await fetchJSON('/urbanisme/status/by-point', { lon: lonNum, lat: latNum })); }
     catch (e) { setErr(prev => (prev ? prev + " | " : "") + "Statut urbanisme: " + e.message); }
 
@@ -127,12 +125,7 @@ function App() {
             {plu.zone_code && <p>Zone : <b>{plu.zone_code}</b></p>}
             {plu.nature && <p>Nature : {plu.nature}</p>}
             {plu.type && <p>Type : {plu.type}</p>}
-            {plu.download_url && (
-              <a href={plu.download_url} target="_blank" rel="noopener">
-                Voir la réponse API GPU (GeoJSON)
-              </a>
-            )}
-
+            {/* Lien GeoJSON retiré */}
             {Array.isArray(plu.reglement_pdfs) && plu.reglement_pdfs.length > 0 && (
               <div>
                 <p>Règlement écrit :</p>
@@ -141,17 +134,16 @@ function App() {
                 ))}</ul>
               </div>
             )}
-
-            {Array.isArray(plu.atom_links) && plu.atom_links.length > 0 ? (
+            {/* Suppression affichage "(ATOM à brancher par commune)" */}
+            {Array.isArray(plu.atom_links) && plu.atom_links.length > 0 && (
               <ul>{plu.atom_links.map((u,i)=>(
                 <li key={i}><a href={u} target="_blank" rel="noopener">Pièce {i+1}</a></li>
               ))}</ul>
-            ) : <p>(ATOM à brancher par commune)</p>}
+            )}
           </div>
         ) : <p>Aucune requête effectuée.</p>}
       </section>
 
-      {/* NEW: Statut d’urbanisme (commune) */}
       <section>
         <h2>Statut d’urbanisme (commune)</h2>
         {urbanisme ? (
