@@ -119,13 +119,18 @@ function App() {
         <h2>PLU</h2>
         {plu ? (
           <div>
+            {plu.zone_code && <p>Zone : <b>{plu.zone_code}</b></p>}
+            {plu.nature && <p>Nature : {plu.nature}</p>}
+            {plu.type && <p>Type : {plu.type}</p>}
             {plu.download_url && (
               <a href={plu.download_url} target="_blank" rel="noopener">
-                Télécharger zonage (WFS shapefile ZIP)
+                Voir la réponse API GPU (GeoJSON)
               </a>
             )}
             {Array.isArray(plu.atom_links) && plu.atom_links.length > 0 ? (
-              <ul>{plu.atom_links.map((u,i)=>(<li key={i}><a href={u} target="_blank" rel="noopener">Pièce {i+1}</a></li>))}</ul>
+              <ul>{plu.atom_links.map((u,i)=>(
+                <li key={i}><a href={u} target="_blank" rel="noopener">Pièce {i+1}</a></li>
+              ))}</ul>
             ) : <p>(ATOM à brancher par commune)</p>}
           </div>
         ) : <p>Aucune requête effectuée.</p>}
