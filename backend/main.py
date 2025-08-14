@@ -31,7 +31,7 @@ WFS_BASE = getattr(CONFIG, "cadastre_wfs_base", "https://data.geopf.fr/wfs/ows")
 TYPENAME_FEUILLE = getattr(
     CONFIG, "cadastre_typename", "CADASTRALPARCELS.PARCELLAIRE_EXPRESS:feuille"
 )
-CADASTRE_MILLESIME = getattr(CONFIG, "cadastre_millesime", "latest")  # ex: "2025-04-01" ou "latest"
+CADASTRE_MILLESIME = getattr(CONFIG, "cadastre_millesime", "2025-04-01")  # ex: "2025-04-01" ou "latest"
 
 # --- Utilitaire WFS (shape-zip, filtré par point WGS84) ---
 # (utilisé par d'autres routes; corrigé: srsName + the_geom)
