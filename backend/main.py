@@ -172,16 +172,22 @@ async def sheet_by_point(
 @app.get("/plu/by-point")
 async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
     """
-    Retourne les infos de zonage du PLU à partir du Géoportail de l'Urbanisme (API Carto).
+    Retourne les infos de zonage du PLU à partir de l'API GPU (Géoportail de l'Urbanisme).
+    Utilise la ressource 'zone-urba' et un point WGS84 correctement encodé.
     """
     if not CONFIG.gpu_base or not CONFIG.gpu_typename:
         raise HTTPException(status_code=500, detail="GPU API non configuré dans config.py")
 
-    # API REST GPU (GeoJSON)
-    api_url = f"{CONFIG.gpu_base}/{CONFIG.gpu_typename}?geom=POINT({lon} {lat})&srid=4326"
+    api_url = f"{CONFIG.gpu_base}/{CONFIG.gpu_typename}"
+
+    # Passer par params pour que httpx fasse l'encodage URL automatiquement
+    params = {
+        "geom": f"POINT({lon} {lat})",
+        "srid": 4326
+    }
 
     async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(api_url)
+        r = await client.get(api_url, params=params)
         if r.status_code != 200:
             raise HTTPException(status_code=500, detail=f"Erreur API GPU: {r.text}")
         data = r.json()
@@ -190,7 +196,7 @@ async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
     if not feats:
         return {
             "note": "Aucune zone PLU trouvée à ce point.",
-            "download_url": api_url,
+            "download_url": str(r.url),  # URL finale avec params encodés
             "atom_links": []
         }
 
@@ -199,8 +205,8 @@ async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
         "zone_code": zone_props.get("libelleZone") or zone_props.get("libelle"),
         "nature": zone_props.get("nature"),
         "type": zone_props.get("typeZone"),
-        "download_url": api_url,
-        "atom_links": [],  # à brancher si on veut le règlement écrit via ATOM
+        "download_url": str(r.url),
+        "atom_links": [],  # à compléter si besoin
         "raw": zone_props
     }
 
