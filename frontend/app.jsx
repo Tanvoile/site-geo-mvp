@@ -127,6 +127,15 @@ function App() {
                 Voir la réponse API GPU (GeoJSON)
               </a>
             )}
+            {Array.isArray(plu.reglement_pdfs) && plu.reglement_pdfs.length > 0 && (
+  <div>
+    <p>Règlement écrit :</p>
+    <ul>{plu.reglement_pdfs.map((u,i)=>(
+      <li key={i}><a href={u} target="_blank" rel="noopener">PDF {i+1}</a></li>
+    ))}</ul>
+  </div>
+)}
+
             {Array.isArray(plu.atom_links) && plu.atom_links.length > 0 ? (
               <ul>{plu.atom_links.map((u,i)=>(
                 <li key={i}><a href={u} target="_blank" rel="noopener">Pièce {i+1}</a></li>
