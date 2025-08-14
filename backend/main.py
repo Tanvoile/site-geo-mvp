@@ -70,20 +70,14 @@ def wfs_shapezip_url(base: str, typename: str, lon: float, lat: float, version: 
     }
     return build_wfs_url(base, params)
 
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-# WARM-UP WFS (nouveau)
+# Petit warm-up best-effort (utilisé pour WFS publics si besoin)
 async def _wfs_warmup(base: str):
-    """
-    Ping MapServer/GeoServer pour 'réveiller' le WFS.
-    On ignore silencieusement les erreurs : best-effort.
-    """
     try:
         url = build_wfs_url(base, {"SERVICE": "WFS", "REQUEST": "GetCapabilities"})
         async with httpx.AsyncClient(timeout=10) as client:
             await client.get(url)
     except Exception:
         pass
-# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 # -------------------------
 #          Routes
@@ -95,13 +89,6 @@ def health():
 
 # ---------- DXF-PCI FEUILLE (DGFiP) ----------
 def _feuille_feature_by_point(lon: float, lat: float) -> dict:
-    """
-    Cherche la feuille qui contient/intersecte le point (lon, lat) en WGS84.
-    Stratégie :
-      1) INTERSECTS (le plus robuste, y.c. bords)
-      2) DWITHIN avec tout petit tampon (0.5 m)
-      3) CONTAINS (au cas où)
-    """
     base_params = {
         "service": "WFS",
         "version": WFS_VERSION,
@@ -142,10 +129,6 @@ def _normalize_section(sec: str) -> str:
     return s if len(s) != 1 else "0" + s  # ex. "C" -> "0C"
 
 def _dxf_feuille_url(props: dict) -> str:
-    """
-    Construit l'URL 'cadastre.data.gouv.fr' du DXF-PCI (tar.bz2) de la feuille entière.
-    Schéma: /{millesime}/dxf/feuilles/{DEP}/{INSEE}/dxf-{DEP}{COM}{COM_ABS}{SECTION}{FEUILLE}.tar.bz2
-    """
     code_dep = str(_pick(props, "CODE_DEP", "code_dep", "dep")).zfill(2)
     code_com = str(_pick(props, "CODE_COM", "code_com", "com")).zfill(3)
     com_abs  = _pick(props, "COM_ABS", "com_abs")
@@ -166,7 +149,6 @@ async def sheet_by_point(
     lat: float = Query(...),
     debug: bool = Query(False)
 ):
-    """Renvoie un lien direct DXF-PCI (DGFiP) pour la feuille cadastrale contenant/intersectant le point."""
     props = _feuille_feature_by_point(lon, lat)
     url = _dxf_feuille_url(props)
 
@@ -189,9 +171,6 @@ async def sheet_by_point(
 # ---------- PLU (zonage) ----------
 @app.get("/plu/by-point")
 async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
-    """
-    Zonage PLU via API Carto (GPU) + liens du règlement écrit si disponibles.
-    """
     if not CONFIG.gpu_base or not CONFIG.gpu_typename:
         raise HTTPException(status_code=500, detail="GPU API non configuré dans config.py")
 
@@ -353,66 +332,35 @@ async def plu_graphic_by_point(
         "locating_maps": locating
     }
 
-# ---------- Atlas Patrimoines (single-link, compat) ----------
-@app.get("/heritage/by-point")
-async def heritage_by_point(
-    lon: float = Query(...),
-    lat: float = Query(...),
-    warmup: bool = Query(True)
-):
-    """
-    Renvoie un lien WFS shape-zip (utile si tu veux télécharger la géo).
-    NB: utilise build_wfs_url pour gérer les bases avec '?map=...'.
-    """
-    if not getattr(CONFIG, "atlas_base", None) or not getattr(CONFIG, "atlas_typename", None):
-        raise HTTPException(status_code=500, detail="Atlas WFS non configuré (atlas_base/atlas_typename).")
-    if warmup:
-        await _wfs_warmup(CONFIG.atlas_base)
-    url = wfs_shapezip_url(CONFIG.atlas_base, CONFIG.atlas_typename, lon, lat, WFS_VERSION)
-    return {"download_url": url}
-
-# ---------- Atlas Patrimoines (résumé multi-couches) ----------
-def _bbox_deg_around_point(lon: float, lat: float, radius_m: float = 5.0) -> Tuple[float, float, float, float]:
-    """BBox minuscule autour du point (~5 m) en degrés; OK pour MapServer WFS par BBOX."""
+# ---------- WFS generic (réutilisé pour INPN & ex-Atlas) ----------
+def _bbox_deg_around_point(lon: float, lat: float, radius_m: float = 7.5) -> Tuple[float, float, float, float]:
     dlat = radius_m / 110_574.0
     dlon = radius_m / (111_320.0 * math.cos(math.radians(lat)) or 1e-6)
     return (lon - dlon, lat - dlat, lon + dlon, lat + dlat)
 
-async def _atlas_hits_for_point(base: str, typename: str, lon: float, lat: float, geom_field: str = "geom") -> dict:
-    """
-    MapServer-compatible: on requête par BBOX minuscule (≈ 5 m).
-    Tentative 1: WFS 1.0.0 + GeoJSON (TYPENAME/SRS/BBOX)
-    Secours    : WFS 2.0.0 + application/json (TYPENAMES/SRSNAME/BBOX)
-    """
+async def _wfs_hits_by_bbox(base: str, typename: str, lon: float, lat: float) -> dict:
     minx, miny, maxx, maxy = _bbox_deg_around_point(lon, lat, radius_m=7.5)
 
-    # Essai 1 : WFS 1.0.0 (souvent mieux supporté par MapServer)
-    params = {
-        "SERVICE": "WFS",
-        "VERSION": "1.0.0",
-        "REQUEST": "GetFeature",
-        "TYPENAME": typename,
-        "SRS": "EPSG:4326",
-        "OUTPUTFORMAT": "geojson",
+    # Essai 1 : WFS 1.0.0
+    params1 = {
+        "SERVICE": "WFS", "VERSION": "1.0.0", "REQUEST": "GetFeature",
+        "TYPENAME": typename, "SRS": "EPSG:4326", "OUTPUTFORMAT": "geojson",
         "BBOX": f"{minx},{miny},{maxx},{maxy}",
     }
-    url = build_wfs_url(base, params)
+    url1 = build_wfs_url(base, params1)
 
     features = []
     try:
         async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(url)
-        r.raise_for_status()
-        data = r.json()
+            r1 = await client.get(url1)
+        r1.raise_for_status()
+        data = r1.json()
         features = data.get("features", [])
     except Exception:
         # Essai 2 : WFS 2.0.0
         params2 = {
-            "SERVICE": "WFS",
-            "VERSION": "2.0.0",
-            "REQUEST": "GetFeature",
-            "TYPENAMES": typename,
-            "SRSNAME": "EPSG:4326",
+            "SERVICE": "WFS", "VERSION": "2.0.0", "REQUEST": "GetFeature",
+            "TYPENAMES": typename, "SRSNAME": "EPSG:4326",
             "OUTPUTFORMAT": "application/json",
             "BBOX": f"{minx},{miny},{maxx},{maxy}",
         }
@@ -440,32 +388,184 @@ async def _atlas_hits_for_point(base: str, typename: str, lon: float, lat: float
     for f in features:
         props = (f.get("properties") or {})
         out.append({"id": f.get("id"), "label": best_label(props), "properties": props})
-
     return {"count": len(out), "features": out}
 
-@app.get("/heritage/summary/by-point")
-async def heritage_summary_by_point(
+# ---------- INPN (WFS) : Natura 2000, ZNIEFF, ZICO ----------
+@app.get("/inpn/summary/by-point")
+async def inpn_summary_by_point(
     lon: float = Query(...),
     lat: float = Query(...),
-    warmup: bool = Query(True, description="Fait un GetCapabilities avant les GetFeature")
+    warmup: bool = Query(True, description="GetCapabilities avant GetFeature (best-effort)")
 ):
-    """
-    Récap pour le front : pour chaque couche Atlas, indique si le point est dedans
-    et liste *quelques* libellés/éléments trouvés.
-    """
-    layers_cfg = getattr(CONFIG, "atlas_layers", None)
+    layers_cfg = getattr(CONFIG, "inpn_layers_wfs", {}) or {}
     if not layers_cfg:
-        # Fallback: on utilise atlas_base/atlas_typename comme unique couche
-        if not getattr(CONFIG, "atlas_base", None) or not getattr(CONFIG, "atlas_typename", None):
-            raise HTTPException(status_code=500, detail="Aucune couche Atlas configurée (atlas_layers ni atlas_base/atlas_typename).")
-        layers_cfg = {
-            "atlas_unique": {
-                "base": CONFIG.atlas_base,
-                "typename": CONFIG.atlas_typename,
-                "pretty": "Atlas (couche unique configurée)",
-                "geom_field": getattr(CONFIG, "atlas_geom_field", "geom"),
-            }
+        return {
+            "note": "Aucune couche INPN WFS configurée (config.inpn_layers_wfs).",
+            "layers": {}
         }
+
+    results = {}; total_hits = 0
+    for key, meta in layers_cfg.items():
+        base = meta["base"]; tname = meta["typename"]
+        pretty = meta.get("pretty", key); source = meta.get("source", "INPN WFS")
+        try:
+            if warmup:
+                await _wfs_warmup(base)
+            res = await _wfs_hits_by_bbox(base, tname, lon, lat)
+            results[key] = {"pretty": pretty, "source": source, "count": res["count"], "hits": res["features"][:10]}
+            total_hits += res["count"]
+        except Exception as e:
+            results[key] = {"pretty": pretty, "source": source, "count": 0, "hits": [], "error": str(e)}
+
+    return {"any_hit": total_hits > 0, "total_hits": total_hits, "layers": results}
+
+# ---------- GPU (REST) : SUP & PLU (EBC/paysage) ----------
+async def _gpu_get(path: str, geom_point: dict) -> dict:
+    url = f"{APICARTO_GPU_BASE}/{path}"
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(url, params={"geom": json.dumps(geom_point)})
+        r.raise_for_status()
+        return r.json()
+
+def _norm(s):
+    return (str(s or "")).strip()
+
+def _has_paysage(words: list[str], *vals: str) -> bool:
+    blob = " ".join(_norm(v).lower() for v in vals)
+    return any(w.lower() in blob for w in words)
+
+@app.get("/gpu/summary/by-point")
+async def gpu_summary_by_point(
+    lon: float = Query(...),
+    lat: float = Query(...),
+):
+    geom_point = {"type": "Point", "coordinates": [lon, lat]}
+    F = CONFIG.gpu_filters
+
+    # 1) SUP — assiettes (S/L/P)
+    sup_paths = ["assiette-sup-s", "assiette-sup-l", "assiette-sup-p"]
+    sup_features: list[dict] = []
+    for p in sup_paths:
+        try:
+            data = await _gpu_get(p, geom_point)
+            sup_features.extend(data.get("features") or [])
+        except Exception:
+            # on continue: toutes les communes n'ont pas toutes les assiettes
+            pass
+
+    def prop(f, *keys):
+        return _pick((f.get("properties") or {}), *keys)
+
+    sup_buckets = {
+        "AC1": {"pretty": "Abords MH (AC1)", "source": "API Carto GPU", "items": []},
+        "AC2": {"pretty": "Sites classés/inscrits (AC2)", "source": "API Carto GPU", "items": []},
+        "AC4": {"pretty": "Site patrimonial remarquable (AC4)", "source": "API Carto GPU", "items": []},
+        "PPR": {"pretty": "Plans de prévention des risques (PPR*)", "source": "API Carto GPU", "items": []},
+    }
+
+    for f in sup_features:
+        code = prop(f, "sup_code", "categorie_code", "code", "CODE", "categorie")
+        label = prop(f, "libelle", "LIBELLE", "nom", "NOM", "intitule", "INTITULE") or "(sans libellé)"
+        rec = {"id": f.get("id"), "label": str(label), "properties": f.get("properties") or {}}
+
+        scode = str(code or "").upper().strip()
+        if scode in set(map(str.upper, F["AC1_codes"])):
+            sup_buckets["AC1"]["items"].append(rec)
+        elif scode in set(map(str.upper, F["AC2_codes"])):
+            sup_buckets["AC2"]["items"].append(rec)
+        elif scode in set(map(str.upper, F["AC4_codes"])):
+            sup_buckets["AC4"]["items"].append(rec)
+        elif scode.startswith(str(F["PPR_prefix"]).upper()):
+            sup_buckets["PPR"]["items"].append(rec)
+
+    # 2) PLU — prescriptions / informations → EBC & éléments de paysage
+    pres_paths = ["prescription-s", "prescription-l", "prescription-p"]
+    info_paths = ["information-s", "information-l", "information-p"]
+    pres_features: list[dict] = []; info_features: list[dict] = []
+
+    for p in pres_paths:
+        try:
+            data = await _gpu_get(p, geom_point)
+            pres_features.extend(data.get("features") or [])
+        except Exception:
+            pass
+
+    for p in info_paths:
+        try:
+            data = await _gpu_get(p, geom_point)
+            info_features.extend(data.get("features") or [])
+        except Exception:
+            pass
+
+    buckets_plu = {
+        "EBC": {"pretty": "Espaces boisés classés (EBC)", "source": "API Carto GPU", "items": []},
+        "PAYSAGE": {"pretty": "Éléments/paysage à préserver", "source": "API Carto GPU", "items": []},
+    }
+
+    # EBC par code (p.ex. "01") sur prescriptions
+    for f in pres_features:
+        code = prop(f, "code", "CODE", "type_code", "typeCode")
+        label = prop(f, "libelle", "LIBELLE", "nom", "NOM", "intitule", "INTITULE") or "(sans libellé)"
+        rec = {"id": f.get("id"), "label": str(label), "properties": f.get("properties") or {}}
+        if str(code or "").strip() in F.get("EBC_codes", []):
+            buckets_plu["EBC"]["items"].append(rec)
+        elif _has_paysage(F.get("paysage_keywords", []), label, code):
+            buckets_plu["PAYSAGE"]["items"].append(rec)
+
+    # Informations : on cherche des indices de paysage/éléments remarquables
+    for f in info_features:
+        code = prop(f, "code", "CODE", "type_code", "typeCode")
+        label = prop(f, "libelle", "LIBELLE", "nom", "NOM", "intitule", "INTITULE") or "(sans libellé)"
+        rec = {"id": f.get("id"), "label": str(label), "properties": f.get("properties") or {}}
+        if _has_paysage(F.get("paysage_keywords", []), label, code):
+            buckets_plu["PAYSAGE"]["items"].append(rec)
+
+    # Compose la réponse homogène
+    out_sup = {}
+    total_sup = 0
+    for k, bucket in sup_buckets.items():
+        cnt = len(bucket["items"]); total_sup += cnt
+        out_sup[k] = {
+            "pretty": bucket["pretty"],
+            "source": bucket["source"],
+            "count": cnt,
+            "hits": bucket["items"][:10]
+        }
+
+    out_plu = {}
+    total_plu = 0
+    for k, bucket in buckets_plu.items():
+        cnt = len(bucket["items"]); total_plu += cnt
+        out_plu[k] = {
+            "pretty": bucket["pretty"],
+            "source": bucket["source"],
+            "count": cnt,
+            "hits": bucket["items"][:10]
+        }
+
+    return {
+        "sup": {"total_hits": total_sup, "layers": out_sup},
+        "plu": {"total_hits": total_plu, "layers": out_plu},
+        "any_hit": (total_sup + total_plu) > 0
+    }
+
+# ---------- (Compat) Atlas Patrimoines single-link ----------
+@app.get("/heritage/by-point")
+async def heritage_by_point(lon: float = Query(...), lat: float = Query(...)):
+    if not getattr(CONFIG, "atlas_layers", None):
+        raise HTTPException(status_code=500, detail="Atlas WFS non configuré (atlas_layers vide).")
+    # On prend arbitrairement la première couche (compat historique)
+    first_key = next(iter(CONFIG.atlas_layers))
+    meta = CONFIG.atlas_layers[first_key]
+    url = wfs_shapezip_url(meta["base"], meta["typename"], lon, lat, WFS_VERSION)
+    return {"download_url": url}
+
+# ---------- (Compat) Atlas Patrimoines résumé multi-couches ----------
+@app.get("/heritage/summary/by-point")
+async def heritage_summary_by_point(lon: float = Query(...), lat: float = Query(...)):
+    layers_cfg = getattr(CONFIG, "atlas_layers", None) or {}
+    if not layers_cfg:
+        return {"note": "Aucune couche Atlas configurée (config.atlas_layers).", "layers": {}}
 
     results = {}
     total_hits = 0
@@ -473,15 +573,13 @@ async def heritage_summary_by_point(
         base = meta["base"]
         tname = meta["typename"]
         pretty = meta.get("pretty", key)
-        gfield = meta.get("geom_field", getattr(CONFIG, "atlas_geom_field", "geom"))
+        source = meta.get("source", "Atlas WFS")
         try:
-            if warmup:
-                await _wfs_warmup(base)  # <<< warm-up ici
-            res = await _atlas_hits_for_point(base, tname, lon, lat, gfield)
-            results[key] = {"pretty": pretty, "count": res["count"], "hits": res["features"][:10]}
+            res = await _wfs_hits_by_bbox(base, tname, lon, lat)
+            results[key] = {"pretty": pretty, "source": source, "count": res["count"], "hits": res["features"][:10]}
             total_hits += res["count"]
         except Exception as e:
-            results[key] = {"pretty": pretty, "count": 0, "hits": [], "error": str(e)}
+            results[key] = {"pretty": pretty, "source": source, "count": 0, "hits": [], "error": str(e)}
 
     return {"any_protection": total_hits > 0, "total_hits": total_hits, "layers": results}
 
@@ -490,7 +588,6 @@ async def heritage_summary_by_point(
 # -------------------------
 
 def _resolve_path(p: str) -> str:
-    """Essaie p tel quel puis relatif à ce fichier (backend/...)."""
     if os.path.isabs(p) and os.path.exists(p):
         return p
     if os.path.exists(p):
@@ -502,7 +599,6 @@ def _resolve_path(p: str) -> str:
     raise FileNotFoundError(p)
 
 def _load_kml_root(path: str):
-    """Charge un .kml ou le .kml contenu dans un .kmz, renvoie l'Element root."""
     path = _resolve_path(path)
     if path.lower().endswith(".kmz"):
         with zipfile.ZipFile(path, "r") as zf:
@@ -513,7 +609,6 @@ def _load_kml_root(path: str):
                 raise ValueError("KMZ sans fichier .kml interne")
             data = zf.read(name)
             return ET.fromstring(data)
-    # .kml
     return ET.parse(path).getroot()
 
 def _float2(s: str):
@@ -523,12 +618,6 @@ def _float2(s: str):
         return None
 
 def parse_kml_points(path: str):
-    """
-    Récupère tous les points d'un KML/KMZ.
-    - <Point><coordinates>lon,lat[,alt]</coordinates>
-    - <LineString>/<Polygon> : prend tous les sommets via <coordinates>
-    - <gx:coord> "lon lat alt"
-    """
     root = _load_kml_root(path)
     pts = set()
 
