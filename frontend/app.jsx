@@ -20,21 +20,6 @@ function parseLatLon(str) {
   return { lat, lon };
 }
 
-function Pill({ ok, children }) {
-  return (
-    <span style={{
-      display:'inline-block',
-      minWidth:22, textAlign:'center',
-      marginRight:8, padding:'2px 6px',
-      borderRadius:6,
-      background: ok ? '#e6ffed' : '#ffecec',
-      border: '1px solid ' + (ok ? '#34c759' : '#ff3b30')
-    }}>
-      {ok ? "✓" : "✗"} {children}
-    </span>
-  );
-}
-
 function App() {
   const [lon, setLon] = useState(2.3522);
   const [lat, setLat] = useState(48.8566);
@@ -43,10 +28,9 @@ function App() {
   const [sheet, setSheet] = useState(null);
   const [plu, setPlu] = useState(null);
   const [urbanisme, setUrbanisme] = useState(null);
-
-  // Nouveau: résumé des protections Atlas
   const [heritageSummary, setHeritageSummary] = useState(null);
 
+  const [parcelLink, setParcelLink] = useState(null); // <- lien parcel-info
   const [airport, setAirport] = useState(null);
   const [err, setErr] = useState("");
 
@@ -68,7 +52,7 @@ function App() {
   const run = async () => {
     setErr("");
     setSheet(null); setPlu(null); setUrbanisme(null);
-    setHeritageSummary(null); setAirport(null);
+    setHeritageSummary(null); setAirport(null); setParcelLink(null);
 
     const lonNum = Number(String(lon).replace(",", "."));
     const latNum = Number(String(lat).replace(",", "."));
@@ -90,15 +74,15 @@ function App() {
     try { setPlu(await fetchJSON('/plu/by-point', { lon: lonNum, lat: latNum })); }
     catch (e) { setErr(prev => (prev ? prev + " | " : "") + "PLU: " + e.message); }
 
-    // Statut d'urbanisme (si ton backend l'a ajouté)
     try { setUrbanisme(await fetchJSON('/urbanisme/status/by-point', { lon: lonNum, lat: latNum })); }
-    catch (e) { /* optionnel: silencieux si pas implémenté */ }
+    catch (e) { /* silencieux si non implémenté */ }
 
-    // >>> Atlas des patrimoines - résumé (nouveau)
     try { setHeritageSummary(await fetchJSON('/heritage/summary/by-point', { lon: lonNum, lat: latNum })); }
-    catch (e) {
-      setHeritageSummary({ not_available: true, error: String(e.message || e) });
-    }
+    catch (e) { setHeritageSummary({ not_available: true, error: String(e.message || e) }); }
+
+    // >>> Lien GPU parcel-info (celui que tu veux afficher dans "Atlas des patrimoines")
+    try { setParcelLink(await fetchJSON('/gpu/parcel-link/by-point', { lon: lonNum, lat: latNum })); }
+    catch (e) { setParcelLink(null); }
 
     try { setAirport(await fetchJSON('/airport/check', { lon: lonNum, lat: latNum, buffer_m: 1000 })); }
     catch (e) { setErr(prev => (prev ? prev + " | " : "") + "Aéroport: " + e.message); }
@@ -124,7 +108,7 @@ function App() {
       }}>
         <div style={{display:'flex', alignItems:'center', gap:12}}>
           <img
-            src="./Logo-DevEnR-web.png"
+            src="./95b5d8c2-ed2c-4fb9-924e-eeae0ff56caa.png"
             alt="Logo Dev'EnR"
             style={{height: '56px', width:'auto'}}
           />
@@ -192,10 +176,7 @@ function App() {
             {plu.zone_code && <p>Zone : <b>{plu.zone_code}</b></p>}
             {plu.nature && <p>Nature : {plu.nature}</p>}
             {plu.type && <p>Type : {plu.type}</p>}
-
-            {/* ⚠️ Lien 'Télécharger zonage' retiré comme demandé */}
-
-            {/* Règlement écrit (si disponible) */}
+            {/* 🔕 Lien 'Télécharger zonage' retiré comme convenu */}
             {Array.isArray(plu.reglement_pdfs) && plu.reglement_pdfs.length > 0 && (
               <div>
                 <p>Règlement écrit :</p>
@@ -204,8 +185,6 @@ function App() {
                 ))}</ul>
               </div>
             )}
-
-            {/* Pièces ATOM éventuelles */}
             {Array.isArray(plu.atom_links) && plu.atom_links.length > 0 && (
               <ul>{plu.atom_links.map((u,i)=>(
                 <li key={i}><a href={u} target="_blank" rel="noopener">Pièce {i+1}</a></li>
@@ -215,27 +194,13 @@ function App() {
         ) : <p>Aucune requête effectuée.</p>}
       </section>
 
-      {/* ================== Statut d’urbanisme (commune) ================== */}
+      {/* ============== Info parcel-info uniquement ============== */}
       <section>
-        <h2>Statut d’urbanisme (commune)</h2>
-        {urbanisme ? (
-          <div style={{border:'1px solid #ddd', padding:8, borderRadius:8}}>
-            <p><b>{urbanisme.status}</b></p>
-            {urbanisme.commune && <p>Commune : {urbanisme.commune}{urbanisme.insee ? ` (${urbanisme.insee})` : ""}</p>}
-            {urbanisme.du_type && <p>Type de document : {urbanisme.du_type}</p>}
-            {urbanisme.partition && <p>Partition : {urbanisme.partition}</p>}
-            {urbanisme.doc_id && <p>Document ID : {urbanisme.doc_id}</p>}
-          </div>
-        ) : <p>Aucune requête effectuée.</p>}
-      </section>
-
-      {/* ============== Atlas des patrimoines — lien seulement ============== */}
-      <section>
-        <h2>Atlas des patrimoines</h2>
-        {plu && plu.download_url ? (
+        <h2>Informations sur la parcelle</h2>
+        {parcelLink && parcelLink.gpu_url ? (
           <p>
-            <a href={plu.download_url} target="_blank" rel="noopener">
-              Ouvrir la réponse GPU (zone-urba) pour ce point
+            <a href={parcelLink.gpu_url} target="_blank" rel="noopener">
+              Voir la parcelle sur le Géoportail de l’Urbanisme
             </a>
           </p>
         ) : (
