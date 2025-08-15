@@ -205,8 +205,8 @@ async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
         partition = props.get("partition") or props.get("Partition")
         gpu_doc_id = props.get("gpu_doc_id") or props.get("gpuDocId") or props.get("gpu_docid")
         nomfic = props.get("nomfic") or props.get("nomFic") or props.get("nom_fic")
-        if partition and gpu_doc_id and nomfic:
-            suffix = nomfic if nomfic.lower().endswith(".pdf") else f"{nomfic}.pdf"
+        if partition, gpu_doc_id, nomfic:
+            suffix = nomfic if str(nomfic).lower().endswith(".pdf") else f"{nomfic}.pdf"
             urls.append(f"https://data.geopf.fr/annexes/gpu/documents/{partition}/{gpu_doc_id}/{suffix}")
         seen = set(); out = []
         for u in urls:
@@ -560,28 +560,124 @@ async def heritage_by_point(lon: float = Query(...), lat: float = Query(...)):
     url = wfs_shapezip_url(meta["base"], meta["typename"], lon, lat, WFS_VERSION)
     return {"download_url": url}
 
-# ---------- (Compat) Atlas Patrimoines résumé multi-couches ----------
+# ---------- (NOUVEAU) "Heritage summary" basé GPU uniquement ----------
 @app.get("/heritage/summary/by-point")
-async def heritage_summary_by_point(lon: float = Query(...), lat: float = Query(...)):
-    layers_cfg = getattr(CONFIG, "atlas_layers", None) or {}
-    if not layers_cfg:
-        return {"note": "Aucune couche Atlas configurée (config.atlas_layers).", "layers": {}}
+async def heritage_summary_by_point(
+    lon: float = Query(...),
+    lat: float = Query(...),
+):
+    """
+    Résumé des protections 'patrimoniales' basé UNIQUEMENT sur l’API Carto GPU:
+      - SPR  (AC4)
+      - ZPPAUP/AVAP  → alias de SPR (héritage : remplacées par les SPR)
+      - Abords MH  (AC1)
+      - Sites classés / Sites inscrits  (AC2, séparés par mots-clés dans le libellé)
+      - MH classés / MH inscrits  → non disponibles via GPU (objets MH ≠ SUP)
+    """
+    geom_point = {"type": "Point", "coordinates": [lon, lat]}
 
-    results = {}
-    total_hits = 0
-    for key, meta in layers_cfg.items():
-        base = meta["base"]
-        tname = meta["typename"]
-        pretty = meta.get("pretty", key)
-        source = meta.get("source", "Atlas WFS")
+    # 1) Récupération des assiettes SUP (S/L/P)
+    sup_paths = ["assiette-sup-s", "assiette-sup-l", "assiette-sup-p"]
+    sup_features: list[dict] = []
+    for p in sup_paths:
         try:
-            res = await _wfs_hits_by_bbox(base, tname, lon, lat)
-            results[key] = {"pretty": pretty, "source": source, "count": res["count"], "hits": res["features"][:10]}
-            total_hits += res["count"]
-        except Exception as e:
-            results[key] = {"pretty": pretty, "source": source, "count": 0, "hits": [], "error": str(e)}
+            data = await _gpu_get(p, geom_point)
+            sup_features.extend(data.get("features") or [])
+        except Exception:
+            pass  # tolérance: toutes les communes n'ont pas toutes les assiettes
 
-    return {"any_protection": total_hits > 0, "total_hits": total_hits, "layers": results}
+    def _best_label(props: Dict[str, Any]) -> str:
+        for k in ("libelle","LIBELLE","nom","NOM","intitule","INTITULE","appellation","APPELLATION","titre","TITRE","denomination","DENOMINATION"):
+            if props.get(k):
+                return str(props[k])
+        for k, v in (props or {}).items():
+            if isinstance(v, (str, int, float)) and str(v).strip():
+                return f"{k}: {v}"
+        return "(sans libellé)"
+
+    # Buckets
+    hits_spr: list[dict] = []            # AC4
+    hits_abords: list[dict] = []         # AC1
+    ac2_all: list[dict] = []             # AC2 (à séparer en classés/inscrits)
+
+    for f in sup_features:
+        props = (f.get("properties") or {})
+        scode = str(_pick(props, "sup_code", "categorie_code", "code", "CODE", "categorie") or "").upper().strip()
+        label = _best_label(props)
+        rec = {"id": f.get("id"), "label": label, "properties": props}
+
+        if scode == "AC4":
+            hits_spr.append(rec)
+        elif scode == "AC1":
+            hits_abords.append(rec)
+        elif scode == "AC2":
+            ac2_all.append(rec)
+
+    # Séparer AC2 en "Sites classés" vs "Sites inscrits" par mots-clés du libellé
+    import re as _re
+    def _match_any(s: str, words: list[str]) -> bool:
+        s = (s or "")
+        return any(_re.search(rf"\b{w}\w*", s, flags=_re.IGNORECASE) for w in words)
+
+    sites_classes = [r for r in ac2_all if _match_any(r["label"], ["classé","classée","classés","classées"])]
+    sites_inscrits = [r for r in ac2_all if _match_any(r["label"], ["inscrit","inscrite","inscrits","inscrites"])]
+
+    # MH classés / inscrits → non fournis par l’API GPU (seuls les abords AC1 existent côté SUP)
+    mh_classes = []
+    mh_inscrits = []
+
+    layers = {
+        "SPR": {
+            "pretty": "Sites patrimoniaux remarquables (SPR)",
+            "source": "API Carto GPU — SUP AC4",
+            "count": len(hits_spr),
+            "hits": hits_spr[:10],
+        },
+        "ZPPAUP_AVAP": {
+            "pretty": "ZPPAUP / AVAP (→ SPR)",
+            "source": "API Carto GPU — alias SUP AC4",
+            "count": len(hits_spr),
+            "hits": hits_spr[:10],
+            "note": "Les ZPPAUP/AVAP ont été remplacées par les SPR (AC4).",
+        },
+        "MH_classes": {
+            "pretty": "Monuments historiques classés",
+            "source": "API Carto GPU",
+            "count": len(mh_classes),
+            "hits": mh_classes,
+            "available": False,
+            "note": "Non disponible via GPU (les objets MH ne sont pas des SUP).",
+        },
+        "MH_inscrits": {
+            "pretty": "Monuments historiques inscrits",
+            "source": "API Carto GPU",
+            "count": len(mh_inscrits),
+            "hits": mh_inscrits,
+            "available": False,
+            "note": "Non disponible via GPU (les objets MH ne sont pas des SUP).",
+        },
+        "Abords_MH": {
+            "pretty": "Abords MH (périmètre délimité ou rayon 500 m)",
+            "source": "API Carto GPU — SUP AC1",
+            "count": len(hits_abords),
+            "hits": hits_abords[:10],
+        },
+        "Sites_classes": {
+            "pretty": "Sites classés",
+            "source": "API Carto GPU — SUP AC2",
+            "count": len(sites_classes),
+            "hits": sites_classes[:10],
+        },
+        "Sites_inscrits": {
+            "pretty": "Sites inscrits",
+            "source": "API Carto GPU — SUP AC2",
+            "count": len(sites_inscrits),
+            "hits": sites_inscrits[:10],
+        },
+    }
+
+    total = sum(layers[k]["count"] for k in layers)
+    return {"any_protection": total > 0, "total_hits": total, "layers": layers}
 
 # -------------------------
 #    KMZ/KML: parsing
