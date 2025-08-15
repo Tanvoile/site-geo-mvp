@@ -34,6 +34,8 @@ _transform_wgs84_to_l93 = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_
 WFS_VERSION = "2.0.0"
 WFS_BASE = getattr(CONFIG, "cadastre_wfs_base", "https://data.geopf.fr/wfs/ows")
 TYPENAME_FEUILLE = getattr(CONFIG, "cadastre_typename", "CADASTRALPARCELS.PARCELLAIRE_EXPRESS:feuille")
+# Nouveau : couche parcelle
+TYPENAME_PARCELLE = "CADASTRALPARCELS.PARCELLAIRE_EXPRESS:parcelle"
 CADASTRE_MILLESIME = getattr(CONFIG, "cadastre_millesime", "2025-04-01")
 
 # Helper: lecture de props tolérante à la casse / alias
@@ -167,6 +169,93 @@ async def sheet_by_point(
     if debug:
         payload["wfs_props"] = props
     return payload
+
+# ---------- (NOUVEAU) LIEN GPU "parcel-info" ----------
+def _parcelle_feature_by_point(lon: float, lat: float) -> dict:
+    """
+    Récupère la parcelle intersectant le point.
+    """
+    base_params = {
+        "service": "WFS",
+        "version": WFS_VERSION,
+        "request": "GetFeature",
+        "typeNames": TYPENAME_PARCELLE,
+        "srsName": "EPSG:4326",
+        "outputFormat": "application/json",
+    }
+
+    def _call(params):
+        r = httpx.get(WFS_BASE, params=params, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("features", [])
+
+    # Essais : INTERSECTS puis petit buffer
+    p1 = dict(base_params, CQL_FILTER=f"INTERSECTS(geom,SRID=4326;POINT({lon} {lat}))")
+    feats = _call(p1)
+
+    if not feats:
+        p2 = dict(base_params, CQL_FILTER=f"DWITHIN(geom,SRID=4326;POINT({lon} {lat}),0.5,meters)")
+        feats = _call(p2)
+
+    if not feats:
+        raise HTTPException(status_code=404, detail="Aucune parcelle trouvée pour ce point.")
+    return feats[0]["properties"]
+
+def _normalize_prefixe(val) -> str:
+    """
+    Dans PCI, 'PREFIXE' est souvent '000'. On force 3 chiffres.
+    """
+    if val is None or val == "":
+        return "000"
+    return str(val).zfill(3)
+
+def _normalize_numero(val) -> str:
+    """
+    Numéro de parcelle sur 4 chiffres.
+    """
+    return str(val).zfill(4)
+
+@app.get("/gpu/parcel-link/by-point")
+async def gpu_parcel_link_by_point(
+    lon: float = Query(...),
+    lat: float = Query(...),
+    debug: bool = Query(False)
+):
+    """
+    Construit l'URL Géoportail Urbanisme 'parcel-info' pour la parcelle au point.
+    Format attendu : /map/parcel-info/{dep}_{com}_{com_abs}_{prefixe}_{section}_{numero}/
+    Exemple fourni : .../map/parcel-info/34_032_000_000_LX_0209/
+    """
+    props = _parcelle_feature_by_point(lon, lat)
+
+    code_dep = str(_pick(props, "CODE_DEP", "code_dep", "dep")).zfill(2)
+    code_com = str(_pick(props, "CODE_COM", "code_com", "com")).zfill(3)
+    com_abs  = _pick(props, "COM_ABS", "com_abs")
+    com_abs  = str(com_abs if com_abs is not None else "000").zfill(3)
+
+    prefixe  = _normalize_prefixe(_pick(props, "PREFIXE", "prefixe"))
+    section  = _normalize_section(_pick(props, "SECTION", "section"))
+    numero   = _normalize_numero(_pick(props, "NUMERO", "numero", "PARCELLE", "parcelle"))
+
+    gpu_url = (
+        "https://www.geoportail-urbanisme.gouv.fr/map/parcel-info/"
+        f"{code_dep}_{code_com}_{com_abs}_{prefixe}_{section}_{numero}/"
+    )
+
+    out = {
+        "code_dep": code_dep,
+        "code_com": code_com,
+        "com_abs": com_abs,
+        "prefixe": prefixe,
+        "section": section,
+        "numero": numero,
+        "gpu_url": gpu_url,
+        "source": "Géoportail de l’Urbanisme (parcel-info)",
+    }
+    if debug:
+        out["wfs_props"] = props
+    return out
 
 # ---------- PLU (zonage) ----------
 @app.get("/plu/by-point")
