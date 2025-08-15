@@ -43,10 +43,9 @@ function App() {
   const [sheet, setSheet] = useState(null);
   const [plu, setPlu] = useState(null);
   const [urbanisme, setUrbanisme] = useState(null);
+  const [parcelInfo, setParcelInfo] = useState(null); // <<< NOUVEAU
 
-  // Nouveau: résumé des protections Atlas
   const [heritageSummary, setHeritageSummary] = useState(null);
-
   const [airport, setAirport] = useState(null);
   const [err, setErr] = useState("");
 
@@ -61,6 +60,7 @@ function App() {
   const run = async () => {
     setErr("");
     setSheet(null); setPlu(null); setUrbanisme(null);
+    setParcelInfo(null); // <<< reset
     setHeritageSummary(null); setAirport(null);
 
     const lonNum = Number(String(lon).replace(",", "."));
@@ -80,17 +80,18 @@ function App() {
     try { setSheet(await fetchJSON('/sheet/by-point', { lon: lonNum, lat: latNum })); }
     catch (e) { setErr(prev => (prev ? prev + " | " : "") + "Feuille: " + e.message); }
 
+    // Lien direct fiche parcelle sur GPU (NOUVEAU)
+    try { setParcelInfo(await fetchJSON('/parcel-info/by-point', { lon: lonNum, lat: latNum })); }
+    catch (e) { setErr(prev => (prev ? prev + " | " : "") + "Parcel-info: " + e.message); }
+
     try { setPlu(await fetchJSON('/plu/by-point', { lon: lonNum, lat: latNum })); }
     catch (e) { setErr(prev => (prev ? prev + " | " : "") + "PLU: " + e.message); }
 
-    // Statut d'urbanisme (si ton backend l'a ajouté)
     try { setUrbanisme(await fetchJSON('/urbanisme/status/by-point', { lon: lonNum, lat: latNum })); }
     catch (e) { /* optionnel: silencieux si pas implémenté */ }
 
-    // >>> Atlas des patrimoines - résumé (nouveau)
     try { setHeritageSummary(await fetchJSON('/heritage/summary/by-point', { lon: lonNum, lat: latNum })); }
     catch (e) {
-      // Si pas dispo chez toi pour l'instant, on met un petit message
       setHeritageSummary({ not_available: true, error: String(e.message || e) });
     }
 
@@ -132,6 +133,19 @@ function App() {
 
       {err && <p style={{color:'crimson'}}>Erreurs: {err}</p>}
 
+      {/* ===================== Parcelle → lien GPU (NOUVEAU) ===================== */}
+      <section>
+        <h2>Parcelle — fiche Géoportail Urbanisme</h2>
+        {parcelInfo ? (
+          <div>
+            <p>ID : {parcelInfo.code_dep}_{parcelInfo.code_com}_{parcelInfo.com_abs}_{parcelInfo.prefixe}_{parcelInfo.section}_{parcelInfo.numero}</p>
+            {parcelInfo.gpu_url
+              ? <p><a href={parcelInfo.gpu_url} target="_blank" rel="noopener">Ouvrir la fiche parcelle</a></p>
+              : <p>Aucun lien disponible.</p>}
+          </div>
+        ) : <p>Aucune requête effectuée.</p>}
+      </section>
+
       {/* ===================== Feuille cadastrale ===================== */}
       <section>
         <h2>Feuille cadastrale</h2>
@@ -150,19 +164,14 @@ function App() {
         <h2>PLU</h2>
         {plu ? (
           <div>
-            {/* Affiche les méta si ton backend les renvoie */}
             {plu.zone_code && <p>Zone : <b>{plu.zone_code}</b></p>}
             {plu.nature && <p>Nature : {plu.nature}</p>}
             {plu.type && <p>Type : {plu.type}</p>}
-
-            {/* Ancien lien WFS si présent */}
             {plu.download_url && (
               <p><a href={plu.download_url} target="_blank" rel="noopener">
                 Télécharger zonage (WFS shapefile ZIP)
               </a></p>
             )}
-
-            {/* Règlement écrit (si disponible) */}
             {Array.isArray(plu.reglement_pdfs) && plu.reglement_pdfs.length > 0 && (
               <div>
                 <p>Règlement écrit :</p>
@@ -171,8 +180,6 @@ function App() {
                 ))}</ul>
               </div>
             )}
-
-            {/* Pièces ATOM éventuelles */}
             {Array.isArray(plu.atom_links) && plu.atom_links.length > 0 && (
               <ul>{plu.atom_links.map((u,i)=>(
                 <li key={i}><a href={u} target="_blank" rel="noopener">Pièce {i+1}</a></li>
@@ -202,7 +209,7 @@ function App() {
         {!heritageSummary ? (
           <p>Aucune requête effectuée.</p>
         ) : heritageSummary.not_available ? (
-          <div style={{color:'#a15c00', background:'#fff8e6', border:'1px solid #ffd479', padding:8}}>
+          <div style={{color:'#a15c00', background:'#fff8e6', border:'1px solid '#ffd479', padding:8}}>
             Récap non disponible (backend /heritage/summary/by-point absent).<br/>
             <small>{heritageSummary.error}</small>
           </div>
