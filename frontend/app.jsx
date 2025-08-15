@@ -153,37 +153,35 @@ function App() {
       </section>
 
       {/* ============================ PLU ============================= */}
-      <section>
-        <h2>PLU</h2>
-        {plu ? (
-          <div>
-            {plu.zone_code && <p>Zone : <b>{plu.zone_code}</b></p>}
-            {plu.nature && <p>Nature : {plu.nature}</p>}
-            {plu.type && <p>Type : {plu.type}</p>}
+<section>
+  <h2>PLU</h2>
+  {plu ? (
+    <div>
+      {/* Affiche les méta si ton backend les renvoie */}
+      {plu.zone_code && <p>Zone : <b>{plu.zone_code}</b></p>}
+      {plu.nature && <p>Nature : {plu.nature}</p>}
+      {plu.type && <p>Type : {plu.type}</p>}
 
-            {plu.download_url && (
-              <p><a href={plu.download_url} target="_blank" rel="noopener">
-                Télécharger zonage (WFS shapefile ZIP)
-              </a></p>
-            )}
+      {/* Règlement écrit (si disponible) */}
+      {Array.isArray(plu.reglement_pdfs) && plu.reglement_pdfs.length > 0 && (
+        <div>
+          <p>Règlement écrit :</p>
+          <ul>{plu.reglement_pdfs.map((u,i)=>(
+            <li key={i}><a href={u} target="_blank" rel="noopener">PDF {i+1}</a></li>
+          ))}</ul>
+        </div>
+      )}
 
-            {Array.isArray(plu.reglement_pdfs) && plu.reglement_pdfs.length > 0 && (
-              <div>
-                <p>Règlement écrit :</p>
-                <ul>{plu.reglement_pdfs.map((u,i)=>(
-                  <li key={i}><a href={u} target="_blank" rel="noopener">PDF {i+1}</a></li>
-                ))}</ul>
-              </div>
-            )}
+      {/* Pièces ATOM éventuelles */}
+      {Array.isArray(plu.atom_links) && plu.atom_links.length > 0 && (
+        <ul>{plu.atom_links.map((u,i)=>(
+          <li key={i}><a href={u} target="_blank" rel="noopener">Pièce {i+1}</a></li>
+        ))}</ul>
+      )}
+    </div>
+  ) : <p>Aucune requête effectuée.</p>}
+</section>
 
-            {Array.isArray(plu.atom_links) && plu.atom_links.length > 0 && (
-              <ul>{plu.atom_links.map((u,i)=>(
-                <li key={i}><a href={u} target="_blank" rel="noopener">Pièce {i+1}</a></li>
-              ))}</ul>
-            )}
-          </div>
-        ) : <p>Aucune requête effectuée.</p>}
-      </section>
 
       {/* ================== Statut d’urbanisme (commune) ================== */}
       <section>
