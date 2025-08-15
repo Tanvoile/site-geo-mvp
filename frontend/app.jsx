@@ -196,19 +196,20 @@ function App() {
         ) : <p>Aucune requête effectuée.</p>}
       </section>
 
-      {/* ============== Atlas des patrimoines — récap ============== */}
-       <section>
-        <h2>Atlas des patrimoines</h2>
-        {parcelInfo && parcelInfo.gpu_url ? (
-          <p>
-            <a href={parcelInfo.gpu_url} target="_blank" rel="noopener">
-              {parcelInfo.gpu_url}
-            </a>
-          </p>
-        ) : (
-          <p>Aucune requête effectuée.</p>
-        )}
-      </section>
+      {/* ============== Atlas des patrimoines — lien seulement ============== */}
+<section>
+  <h2>Atlas des patrimoines</h2>
+  {plu && plu.download_url ? (
+    <p>
+      <a href={plu.download_url} target="_blank" rel="noopener">
+        Ouvrir la réponse GPU (zone-urba) pour ce point
+      </a>
+    </p>
+  ) : (
+    <p>Aucune requête effectuée.</p>
+  )}
+</section>
+
 
       {/* ============================ Aéroports ============================ */}
       <section>
