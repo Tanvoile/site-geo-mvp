@@ -196,7 +196,7 @@ function App() {
 
       {/* ============== Info parcel-info uniquement ============== */}
       <section>
-        <h2>Informations sur la parcelle</h2>
+        <h2>Information sur la parcelle</h2>
         {parcelLink && parcelLink.gpu_url ? (
           <p>
             <a href={parcelLink.gpu_url} target="_blank" rel="noopener">
