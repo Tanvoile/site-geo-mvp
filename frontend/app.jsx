@@ -108,7 +108,7 @@ function App() {
       }}>
         <div style={{display:'flex', alignItems:'center', gap:12}}>
           <img
-            src="./95b5d8c2-ed2c-4fb9-924e-eeae0ff56caa.png"
+            src="./Logo-DevEnR-web.png"
             alt="Logo Dev'EnR"
             style={{height: '56px', width:'auto'}}
           />
