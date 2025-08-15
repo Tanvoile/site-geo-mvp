@@ -50,6 +50,9 @@ function App() {
   const [airport, setAirport] = useState(null);
   const [err, setErr] = useState("");
 
+  // NOUVEAU: lien parcel-info (Atlas des patrimoines)
+  const [parcelLink, setParcelLink] = useState(null);
+
   const applyPasted = (text) => {
     const parsed = parseLatLon(text ?? paste);
     if (!parsed) return setErr("Coordonnées collées invalides. Format: lat, lon");
@@ -62,6 +65,7 @@ function App() {
     setErr("");
     setSheet(null); setPlu(null); setUrbanisme(null);
     setHeritageSummary(null); setAirport(null);
+    setParcelLink(null);
 
     const lonNum = Number(String(lon).replace(",", "."));
     const latNum = Number(String(lat).replace(",", "."));
@@ -87,12 +91,15 @@ function App() {
     try { setUrbanisme(await fetchJSON('/urbanisme/status/by-point', { lon: lonNum, lat: latNum })); }
     catch (e) { /* optionnel: silencieux si pas implémenté */ }
 
-    // >>> Atlas des patrimoines - résumé (nouveau)
+    // >>> Atlas des patrimoines - résumé (si dispo)
     try { setHeritageSummary(await fetchJSON('/heritage/summary/by-point', { lon: lonNum, lat: latNum })); }
     catch (e) {
-      // Si pas dispo chez toi pour l'instant, on met un petit message
       setHeritageSummary({ not_available: true, error: String(e.message || e) });
     }
+
+    // >>> NOUVEAU : lien direct parcel-info (GPU)
+    try { setParcelLink(await fetchJSON('/gpu/parcel-link/by-point', { lon: lonNum, lat: latNum })); }
+    catch (e) { setParcelLink(null); }
 
     try { setAirport(await fetchJSON('/airport/check', { lon: lonNum, lat: latNum, buffer_m: 1000 })); }
     catch (e) { setErr(prev => (prev ? prev + " | " : "") + "Aéroport: " + e.message); }
@@ -150,19 +157,16 @@ function App() {
         <h2>PLU</h2>
         {plu ? (
           <div>
-            {/* Affiche les méta si ton backend les renvoie */}
             {plu.zone_code && <p>Zone : <b>{plu.zone_code}</b></p>}
             {plu.nature && <p>Nature : {plu.nature}</p>}
             {plu.type && <p>Type : {plu.type}</p>}
 
-            {/* Ancien lien WFS si présent */}
             {plu.download_url && (
               <p><a href={plu.download_url} target="_blank" rel="noopener">
                 Télécharger zonage (WFS shapefile ZIP)
               </a></p>
             )}
 
-            {/* Règlement écrit (si disponible) */}
             {Array.isArray(plu.reglement_pdfs) && plu.reglement_pdfs.length > 0 && (
               <div>
                 <p>Règlement écrit :</p>
@@ -172,7 +176,6 @@ function App() {
               </div>
             )}
 
-            {/* Pièces ATOM éventuelles */}
             {Array.isArray(plu.atom_links) && plu.atom_links.length > 0 && (
               <ul>{plu.atom_links.map((u,i)=>(
                 <li key={i}><a href={u} target="_blank" rel="noopener">Pièce {i+1}</a></li>
@@ -197,19 +200,18 @@ function App() {
       </section>
 
       {/* ============== Atlas des patrimoines — lien seulement ============== */}
-<section>
-  <h2>Atlas des patrimoines</h2>
-  {plu && plu.download_url ? (
-    <p>
-      <a href={plu.download_url} target="_blank" rel="noopener">
-        Ouvrir la réponse GPU (zone-urba) pour ce point
-      </a>
-    </p>
-  ) : (
-    <p>Aucune requête effectuée.</p>
-  )}
-</section>
-
+      <section>
+        <h2>Atlas des patrimoines</h2>
+        {parcelLink && parcelLink.gpu_url ? (
+          <p>
+            <a href={parcelLink.gpu_url} target="_blank" rel="noopener">
+              Ouvrir la fiche parcelle sur le Géoportail de l’Urbanisme
+            </a>
+          </p>
+        ) : (
+          <p>Aucune requête effectuée.</p>
+        )}
+      </section>
 
       {/* ============================ Aéroports ============================ */}
       <section>
