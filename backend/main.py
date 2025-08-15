@@ -170,6 +170,36 @@ async def sheet_by_point(
         payload["wfs_props"] = props
     return payload
 
+# ---------- PARCEL INFO GPU ----------
+@app.get("/parcel-info/by-point")
+async def parcel_info_by_point(
+    lon: float = Query(...),
+    lat: float = Query(...)
+):
+    props = _feuille_feature_by_point(lon, lat)
+    code_dep = str(_pick(props, "CODE_DEP", "code_dep")).zfill(2)
+    code_com = str(_pick(props, "CODE_COM", "code_com")).zfill(3)
+    com_abs  = str(_pick(props, "COM_ABS", "com_abs") or "000").zfill(3)
+    prefixe  = "000"  # généralement 000
+    section  = _normalize_section(_pick(props, "SECTION", "section"))
+    numero   = str(_pick(props, "NUMERO", "numero")).zfill(4)
+
+    parcel_id = f"{code_dep}_{code_com}_{com_abs}_{prefixe}_{section}_{numero}"
+    gpu_url = f"https://www.geoportail-urbanisme.gouv.fr/map/parcel-info/{parcel_id}/"
+
+    return {
+        "code_dep": code_dep,
+        "code_com": code_com,
+        "com_abs": com_abs,
+        "prefixe": prefixe,
+        "section": section,
+        "numero": numero,
+        "gpu_url": gpu_url,
+        "source": "Géoportail de l’Urbanisme (parcel-info)",
+        "wfs_props": props
+    }
+
+
 # ---------- (NOUVEAU) LIEN GPU "parcel-info" ----------
 def _parcelle_feature_by_point(lon: float, lat: float) -> dict:
     """
