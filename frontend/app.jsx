@@ -107,7 +107,7 @@ function App() {
 
   return (
     <div style={{maxWidth: 860, margin: '0 auto', padding:'0 12px'}}>
-      <h1>Site GEO — MVP</h1>
+      <h1>Outil pour chargé d'étude</h1>
       <p>Entrez un point GPS (WGS84) ou collez-le directement.</p>
 
       {/* Champ pour coller "lat, lon" */}
