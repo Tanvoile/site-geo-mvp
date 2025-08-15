@@ -205,7 +205,7 @@ async def plu_by_point(lon: float = Query(...), lat: float = Query(...)):
         partition = props.get("partition") or props.get("Partition")
         gpu_doc_id = props.get("gpu_doc_id") or props.get("gpuDocId") or props.get("gpu_docid")
         nomfic = props.get("nomfic") or props.get("nomFic") or props.get("nom_fic")
-        if partition, gpu_doc_id, nomfic:
+        if partition and gpu_doc_id and nomfic:
             suffix = nomfic if str(nomfic).lower().endswith(".pdf") else f"{nomfic}.pdf"
             urls.append(f"https://data.geopf.fr/annexes/gpu/documents/{partition}/{gpu_doc_id}/{suffix}")
         seen = set(); out = []
