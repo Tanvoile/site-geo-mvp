@@ -434,12 +434,27 @@ def _has_paysage(words: list[str], *vals: str) -> bool:
     blob = " ".join(_norm(v).lower() for v in vals)
     return any(w.lower() in blob for w in words)
 
+# --- NOUVEAU: petit disque WGS84 pour bufferiser le point (25 m par défaut) ---
+def _point_buffer_polygon_wgs84(lon: float, lat: float, radius_m: float = 25.0, n: int = 24) -> dict:
+    """
+    Disque approx. autour du point en WGS84 pour interroger l'API GPU par polygon.
+    """
+    dlat = radius_m / 111_320.0
+    dlon = radius_m / (111_320.0 * max(math.cos(math.radians(lat)), 1e-6))
+    coords = []
+    for i in range(n):
+        a = 2 * math.pi * i / n
+        coords.append([lon + dlon * math.cos(a), lat + dlat * math.sin(a)])
+    coords.append(coords[0])
+    return {"type": "Polygon", "coordinates": [coords]}
+
 @app.get("/gpu/summary/by-point")
 async def gpu_summary_by_point(
     lon: float = Query(...),
     lat: float = Query(...),
 ):
-    geom_point = {"type": "Point", "coordinates": [lon, lat]}
+    # Utilise un POLYGON (buffer 25 m) pour éviter les faux négatifs sur limites
+    geom_point = _point_buffer_polygon_wgs84(lon, lat, radius_m=25.0)
     F = CONFIG.gpu_filters
 
     # 1) SUP — assiettes (S/L/P)
