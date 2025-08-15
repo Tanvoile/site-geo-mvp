@@ -21,8 +21,8 @@ function parseLatLon(str) {
 }
 
 function App() {
-  const [lon, setLon] = useState(2.3522);
-  const [lat, setLat] = useState(48.8566);
+  const [lon, setLon] = useState(3.2154318992004214);
+  const [lat, setLat] = useState(43.34080223035807);
   const [paste, setPaste] = useState("");
 
   const [sheet, setSheet] = useState(null);
