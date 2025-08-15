@@ -197,42 +197,16 @@ function App() {
       </section>
 
       {/* ============== Atlas des patrimoines — récap ============== */}
-      <section>
-        <h2>Atlas des patrimoines (récap protections)</h2>
-        {!heritageSummary ? (
-          <p>Aucune requête effectuée.</p>
-        ) : heritageSummary.not_available ? (
-          <div style={{color:'#a15c00', background:'#fff8e6', border:'1px solid #ffd479', padding:8}}>
-            Récap non disponible (backend /heritage/summary/by-point absent).<br/>
-            <small>{heritageSummary.error}</small>
-          </div>
+       <section>
+        <h2>Atlas des patrimoines</h2>
+        {parcelInfo && parcelInfo.gpu_url ? (
+          <p>
+            <a href={parcelInfo.gpu_url} target="_blank" rel="noopener">
+              {parcelInfo.gpu_url}
+            </a>
+          </p>
         ) : (
-          <div>
-            <p>
-              Protection(s) trouvée(s) :{" "}
-              <b>{heritageSummary.any_protection ? "✓ OUI" : "✗ NON"}</b>
-              {heritageSummary.any_protection && <> — {heritageSummary.total_hits} élément(s)</>}
-            </p>
-            <ul style={{listStyle:'none', paddingLeft:0}}>
-              {Object.entries(heritageSummary.layers || {}).map(([key, layer]) => (
-                <li key={key} style={{marginBottom:10}}>
-                  <Pill ok={layer.count>0} />
-                  <b>{layer.pretty || key}</b>
-                  {layer.count>0 && (
-                    <details style={{marginTop:6}}>
-                      <summary>Voir les {layer.count} élément(s)</summary>
-                      <ul>
-                        {(layer.hits || []).map((h,i)=>(
-                          <li key={i}>{h.label || "(sans libellé)"}</li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
-                  {layer.error && <div style={{color:'crimson'}}>Erreur: {layer.error}</div>}
-                </li>
-              ))}
-            </ul>
-          </div>
+          <p>Aucune requête effectuée.</p>
         )}
       </section>
 
